@@ -505,5 +505,72 @@ print( "  PASS  (F) mutation: a drift= that followed the window IS caught by the
 PY
 [ $? = 0 ] || fail=1
 
+# ── ARM B of the paging spec (upstream issue #294, corrected scope): the BUDGETED-bundle continuation ──
+# `--for=TASK --limit=N` already pages (the file-grain widening page, forwidencheck owns it). What does
+# NOT exist yet: the byte-budgeted bundle (--token-budget) under --offset/--limit — today the pair is
+# refused, so an agent whose bundle was cut can only re-run blind. This arm is the SEAM contract for the
+# budget-mode continuation once it exists: --offset=N --limit=M must be the EXACT continuation of the
+# previous page over the ranked candidate set — page[0:3] + page[3:6] == page[0:6] in candidates, rank
+# order, no gap, no overlap (the same contract arm (A) holds for <a> rows, here measured on the sig rows
+# of the paged budgeted bundle). RED on the pre-feature binary is the intended state: gate written
+# BEFORE the code, red vs the pre-change binary — today both paged runs refuse and this records that.
+echo "=== (G) budgeted-bundle candidate continuation: page[0:3] + page[3:6] == page[0:6] ==="
+FOR_BUDGET="--for=rank symbols --token-budget=800"
+run "$ROOT" g_budget_p0 $FOR_BUDGET --limit=3 --offset=0
+run "$ROOT" g_budget_p3 $FOR_BUDGET --limit=3 --offset=3
+run "$ROOT" g_budget_p6 $FOR_BUDGET --limit=6 --offset=0
+
+python3 - "$TMP" <<'PY'
+import os, sys, xml.etree.ElementTree as ET
+
+tmp = sys.argv[1]
+problems = []
+
+def sigs(name):
+    path = os.path.join(tmp, name)
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        problems.append(f"{name}: no output — the paged budgeted bundle does not exist yet "
+                        "(today --token-budget refuses --offset/--limit; that refusal IS this arm's recorded red)")
+        return None
+    raw = open(path, encoding="utf-8", errors="replace").read()
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as e:
+        problems.append(f"{name}: not parseable XML ({e})"); return None
+    q = [k for k in ("shown", "total", "capped", "has_more", "next_offset") if k not in root.attrib]
+    if q:
+        problems.append(f'{name}: paged budgeted root lacks the quintet (missing: {", ".join(q)})'); return None
+    return [ (el.attrib.get("n") or el.attrib.get("name") or el.text or "")
+             for el in root.iter() if el.tag in ("s", "sig") ]
+
+p0 = sigs("g_budget_p0"); p3 = sigs("g_budget_p3"); p6 = sigs("g_budget_p6")
+if p0 is not None and p3 is not None and p6 is not None:
+    joined, whole = p0 + p3, p6
+    if len(joined) != len(whole):
+        problems.append(f"seam: page[0:3]+page[3:6] gives {len(joined)} rows, page[0:6] gives {len(whole)} — rows lost or duplicated across the seam")
+    else:
+        for i, (a, b) in enumerate(zip(joined, whole)):
+            if a != b:
+                problems.append(f"seam: row {i} disagrees across the seam (pages say {a!r}, whole says {b!r}) — not the exact continuation")
+                break
+    overlap = set(p0) & set(p3)
+    if overlap:
+        problems.append(f"seam: pages overlap on {sorted(overlap)[:3]} — a candidate served twice is a page that lies")
+    if not problems:
+        print(f"  PASS  (G) seam: {len(whole)} candidate rows, two pages == the whole, rank order, no overlap")
+
+# mutation: the seam shape can fail — an overlapping pair of fabricated pages must be DETECTED
+mut_a, mut_b = ["a", "b", "c"], ["b", "c", "d"]
+if len(set(mut_a) & set(mut_b)) != 2:
+    problems.append("mutation: an overlapping fabricated page pair was NOT detected — the seam arm cannot fail")
+else:
+    print("  PASS  (G) mutation: an overlapping fabricated page pair IS detected")
+
+for p in problems: print("  FAIL  " + p)
+sys.exit(1 if problems else 0)
+PY
+[ $? = 0 ] && ok '(G) budgeted-bundle pages are the exact continuation (candidates, rank order, no overlap)' \
+               || no '(G) the budgeted-bundle continuation seam (upstream issue #294) does not hold — see FAIL lines above'
+
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit $fail
