@@ -495,5 +495,88 @@ else
     ok "G4: xmllint unavailable (skipped)"
 fi
 
+# ── (H) ARM A of the paging spec (upstream issue #294, scope corrected by measurement) ──────────
+echo
+echo "── (H) ARM A: the BUDGETED bundle continuation carries the pageview quintet ──"
+# SCOPE, corrected by what the tree already does (measured 2026-09-19, on this binary):
+#   * `--for=TASK --limit=N` (+offset=M) is the FILE-GRAIN WIDENING PAGE — it exists, it carries the
+#     full pageview quintet, and forwidencheck owns it. Re-gating it here would violate §6.4 (the gate
+#     that already owns the subject takes the arm; a duplicate arm is coverage-shaped noise).
+#   * The MCP `for` verb serves that widening page today (limit=5 → <files shown= total= has_more=
+#     next_offset= next="…">); the MCP `explore` verb refuses limit ("unknown field").
+#   * `--for --token-budget=N --offset=M` REFUSES (stdout empty). The byte-budgeted compact bundle —
+#     the thing whose cut IS disclosed (over_ceiling= reason=) but with NO continuation handle — is the
+#     actual open gap of issue #294. THIS arm guards exactly that: the budgeted bundle, paged by
+#     candidate offset, must carry the pageview quintet, and offset=0 must be byte-identical to the
+#     un-paged budgeted answer (the regression floor: existing callers must see identical output).
+# RED on the pre-feature binary is the intended state — gate written BEFORE the code, red vs the
+# pre-change binary, same discipline as runtracecheck.sh. It greens when the continuation ships.
+paged(){ local name="$1"; shift; run "$@" > "$TMP/page_$name.xml"; }
+paged for_budget_full  "$BIG"  --for="rank symbols" --token-budget=800 --offset=0
+paged for_budget_page  "$BIG"  --for="rank symbols" --token-budget=800 --offset=5
+paged pack_budget_page "$BIG"  --pack-task="rank symbols by pagerank" --token-budget=800 --offset=5
+run "$BIG" --for="rank symbols" --token-budget=800 > "$TMP/page_for_budget_nopage.xml"
+
+python3 - "$TMP" <<'PY'
+import os, sys, xml.etree.ElementTree as ET
+
+tmp = sys.argv[1]
+QUINTET = ("shown", "total", "capped", "has_more", "next_offset")
+problems = []
+
+def load(name):
+    path = os.path.join(tmp, f"page_{name}.xml")
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        problems.append(f"{name}: the paged run produced no output — the page arm asserted nothing "
+                        "(today: --token-budget refuses --offset; that refusal IS the red this arm exists to record)")
+        return None
+    raw = open(path, encoding="utf-8", errors="replace").read()
+    try:
+        return ET.fromstring(raw), raw
+    except ET.ParseError as e:
+        problems.append(f'{name}: paged output is not parseable XML ({e}) — a paged task-lens answer must be a document')
+        return None
+
+for name in ("for_budget_full", "for_budget_page", "pack_budget_page"):
+    loaded = load(name)
+    if loaded is None: continue
+    root, _ = loaded
+    a = root.attrib
+    missing = [k for k in QUINTET if k not in a]
+    if missing:
+        problems.append(f'{name}: paged budgeted root lacks the pageview quintet (missing: {", ".join(missing)}) — '
+                        "the continuation contract pageview.h owns for every row verb is absent on the budgeted bundle")
+        continue
+    if a["capped"] not in ("0", "1"):
+        problems.append(f'{name}: capped="{a["capped"]}" is not the 0|1 bit (rule 3)')
+    if int(a["shown"]) > int(a["total"]):
+        problems.append(f'{name}: shown={a["shown"]} > total={a["total"]} — a page cannot show more than the candidate set')
+
+full = load("for_budget_full")
+nopage = os.path.join(tmp, "page_for_budget_nopage.xml")
+if full is not None and os.path.exists(nopage) and os.path.getsize(nopage) > 0:
+    _, full_raw = full
+    nopage_raw = open(nopage, encoding="utf-8", errors="replace").read()
+    if full_raw != nopage_raw:
+        problems.append("for_budget_full: offset=0 is NOT byte-identical to the un-paged budgeted answer — the "
+                        "regression floor (issue #294 acceptance criterion 2) is broken: existing callers must see identical output")
+
+# mutation: the assertion shape can fail — a bare paged root with no continuation handle must be SEEN
+mut = ET.fromstring('<ctx shown="5" total="9" capped="1"/>').attrib
+if sorted(k for k in QUINTET if k not in mut) != ["has_more", "next_offset"]:
+    problems.append("mutation: a bare paged root with no has_more=/next_offset= was NOT detected — the arm cannot fail")
+else:
+    print('  PASS  (H) mutation: a bare paged root (no has_more=/next_offset=) IS detected')
+
+for p in problems: print("  FAIL  " + p)
+print("  ..    (H) budgeted-bundle paged captures checked: 3, plus the offset=0 byte-identity floor")
+sys.exit(1 if problems else 0)
+PY
+if [ $? = 0 ]; then
+    ok '(H) paged budgeted-bundle roots carry the full pageview quintet; offset=0 is byte-identical to the un-paged budgeted answer'
+else
+    no '(H) the budgeted-bundle continuation contract (upstream issue #294, corrected scope) does not hold — see FAIL lines above'
+fi
+
 [ $fail = 0 ] && echo "ALL PASS" || echo "FAILURES"
 exit $fail
