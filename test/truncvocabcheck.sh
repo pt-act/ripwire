@@ -539,9 +539,11 @@ def load(name):
         problems.append(f'{name}: paged output is not parseable XML ({e}) — a paged task-lens answer must be a document')
         return None
 
+paged_roots = {}
 for name in ("for_budget_full", "for_budget_page", "pack_budget_page"):
     loaded = load(name)
     if loaded is None: continue
+    paged_roots[name] = loaded[0]
     root, _ = loaded
     a = root.attrib
     missing = [k for k in QUINTET if k not in a]
@@ -553,6 +555,31 @@ for name in ("for_budget_full", "for_budget_page", "pack_budget_page"):
         problems.append(f'{name}: capped="{a["capped"]}" is not the 0|1 bit (rule 3)')
     if int(a["shown"]) > int(a["total"]):
         problems.append(f'{name}: shown={a["shown"]} > total={a["total"]} — a page cannot show more than the candidate set')
+    # ARM C of the paging spec, housed here because THIS gate owns the <bodies> rule-5 vocabulary (the
+    # §B8.3 sweep): within a candidate page, a body byte-trim must still disclose shown=/total=/capped=
+    # on <bodies> — the candidate cursor advances the SET, rule 5 discloses the within-page byte trim.
+    for el in root.iter():
+        ea = el.attrib
+        if ea.get("capped") == "1" and el.tag.lower().endswith("bodies"):
+            if "shown" not in ea or "total" not in ea:
+                problems.append(f'{name}: <{el.tag} capped="1"> within the page carries no '
+                                "shown=/total= — the within-page byte trim is undisclosed (rule 5)")
+
+# ARM F of the paging spec (CONTINGENT on the #294 ruling; it encodes the PROPOSED answer): the cliff
+# boundary is computed ONCE over the full ranked candidate set — the boundary value reported must be
+# IDENTICAL on every page of the same query. If maintainers pick the per-page re-cliff alternative, this
+# assert is rewritten to that contract before any code lands (the spec does not assume its own question).
+cliff_attrs = {}
+for name, root in paged_roots.items():
+    for el in root.iter():
+        for key, val in el.attrib.items():
+            if key in ("cliff_rank", "cliffrank", "cliff"):
+                cliff_attrs.setdefault(key, set()).add(val)
+if cliff_attrs:
+    for key, vals in cliff_attrs.items():
+        if len(vals) > 1:
+            problems.append(f"cliff {key} moved across pages of the same query ({sorted(vals)}) — the boundary "
+                            "must be computed once over the full candidate set, not re-decided per page")
 
 full = load("for_budget_full")
 nopage = os.path.join(tmp, "page_for_budget_nopage.xml")
