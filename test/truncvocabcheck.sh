@@ -514,9 +514,10 @@ echo "── (H) ARM A: the BUDGETED bundle continuation carries the pageview qu
 # RED on the pre-feature binary is the intended state — gate written BEFORE the code, red vs the
 # pre-change binary, same discipline as runtracecheck.sh. It greens when the continuation ships.
 paged(){ local name="$1"; shift; run "$@" > "$TMP/page_$name.xml"; }
-paged for_budget_full  "$BIG"  --for="rank symbols" --token-budget=800 --offset=0
+paged for_budget_p0w  "$BIG"  --for="rank symbols" --token-budget=800 --limit=6 --offset=0
 paged for_budget_page  "$BIG"  --for="rank symbols" --token-budget=800 --offset=5
 paged pack_budget_page "$BIG"  --pack-task="rank symbols by pagerank" --token-budget=800 --offset=5
+run "$BIG" --for="rank symbols" --token-budget=800 --offset=0 > "$TMP/page_for_budget_alone.xml"   # offset=0 ALONE = the un-paged bundle
 run "$BIG" --for="rank symbols" --token-budget=800 > "$TMP/page_for_budget_nopage.xml"
 
 python3 - "$TMP" <<'PY'
@@ -540,7 +541,7 @@ def load(name):
         return None
 
 paged_roots = {}
-for name in ("for_budget_full", "for_budget_page", "pack_budget_page"):
+for name in ("for_budget_p0w", "for_budget_page", "pack_budget_page"):
     loaded = load(name)
     if loaded is None: continue
     paged_roots[name] = loaded[0]
@@ -581,14 +582,13 @@ if cliff_attrs:
             problems.append(f"cliff {key} moved across pages of the same query ({sorted(vals)}) — the boundary "
                             "must be computed once over the full candidate set, not re-decided per page")
 
-full = load("for_budget_full")
+alone = os.path.join(tmp, "page_for_budget_alone.xml")
 nopage = os.path.join(tmp, "page_for_budget_nopage.xml")
-if full is not None and os.path.exists(nopage) and os.path.getsize(nopage) > 0:
-    _, full_raw = full
-    nopage_raw = open(nopage, encoding="utf-8", errors="replace").read()
-    if full_raw != nopage_raw:
-        problems.append("for_budget_full: offset=0 is NOT byte-identical to the un-paged budgeted answer — the "
-                        "regression floor (issue #294 acceptance criterion 2) is broken: existing callers must see identical output")
+if os.path.exists(alone) and os.path.getsize(alone) > 0 and os.path.exists(nopage) and os.path.getsize(nopage) > 0:
+    if open(alone, encoding="utf-8", errors="replace").read() != open(nopage, encoding="utf-8", errors="replace").read():
+        problems.append("for_budget_alone: --offset=0 ALONE must be byte-identical to the un-paged budgeted "
+                        "answer (the un-paged bundle is the byte-pinned ladder, forbudgetmonotoncheck's ground — "
+                        "the page contract ADDS a windowed mode, it must not touch the un-paged bytes)")
 
 # mutation: the assertion shape can fail — a bare paged root with no continuation handle must be SEEN
 mut = ET.fromstring('<ctx shown="5" total="9" capped="1"/>').attrib

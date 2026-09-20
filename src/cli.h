@@ -3784,7 +3784,8 @@ inline constexpr PagingFamilyFlagGuard kMaxTokensGuard
 inline constexpr PagingFamilyFlagGuard kTokenBudgetGuard
 {
     "--token-budget is honored by the default map (the CI gate), --for, --pack-task, --recall, "
-    "--handoff, --from-trace, --run-trace and --pr-context — none of them, --pr-context aside (it pages AND shapes by budget), "
+    "--handoff, --from-trace, --run-trace and --pr-context — none of them, --pr-context and --for/--pack-task beside an explicit "
+    "--limit/--offset window aside (those page AND shape by budget: the budgeted-bundle candidate page, issue #294), "
     "in the --limit/--offset-honoring set (",
     ")",
     "no byte budget to gate",
@@ -3817,7 +3818,12 @@ inline void validateShapingFlagsHonored( Config& c ) noexcept
     {
         refusePagingFamilyFlag( c, kMaxTokensGuard );
     }
-    if( c.tokenBudget != 0 && !c.prContext )
+    // PAGING-POC (issue #294): --for/--pack-task under an EXPLICIT --limit/--offset window page their
+    // budgeted bundle (the candidate-offset continuation) — they page AND shape by budget, the same
+    // class --pr-context holds alone today. The refusal skips that combination only; every other
+    // budgeted verb, and the bare bundles, refuse exactly as before.
+    const bool budgetWindowPages = ( !c.forTask.empty() || c.packTaskFlag ) && ( c.pageLimit > 0 || c.pageOffset > 0 );
+    if( c.tokenBudget != 0 && !c.prContext && !budgetWindowPages )
     {
         refusePagingFamilyFlag( c, kTokenBudgetGuard );
     }

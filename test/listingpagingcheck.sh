@@ -515,10 +515,9 @@ PY
 # of the paged budgeted bundle). RED on the pre-feature binary is the intended state: gate written
 # BEFORE the code, red vs the pre-change binary — today both paged runs refuse and this records that.
 echo "=== (G) budgeted-bundle candidate continuation: page[0:3] + page[3:6] == page[0:6] ==="
-FOR_BUDGET="--for=rank symbols --token-budget=800"
-run "$ROOT" g_budget_p0 $FOR_BUDGET --limit=3 --offset=0
-run "$ROOT" g_budget_p3 $FOR_BUDGET --limit=3 --offset=3
-run "$ROOT" g_budget_p6 $FOR_BUDGET --limit=6 --offset=0
+run "$ROOT" g_budget_p0 --for="rank symbols" --token-budget=800 --limit=3 --offset=0
+run "$ROOT" g_budget_p3 --for="rank symbols" --token-budget=800 --limit=3 --offset=3
+run "$ROOT" g_budget_p6 --for="rank symbols" --token-budget=800 --limit=6 --offset=0
 
 python3 - "$TMP" <<'PY'
 import os, sys, xml.etree.ElementTree as ET
@@ -540,8 +539,13 @@ def sigs(name):
     q = [k for k in ("shown", "total", "capped", "has_more", "next_offset") if k not in root.attrib]
     if q:
         problems.append(f'{name}: paged budgeted root lacks the quintet (missing: {", ".join(q)})'); return None
-    return [ (el.attrib.get("n") or el.attrib.get("name") or el.text or "")
-             for el in root.iter() if el.tag in ("s", "sig") ]
+    # the bundle's sig rows are <d n="..."> elements (serialize.h's flat lens path) — the arm's first
+    # cut guessed <s>/<sig>, matched nothing, and produced a VACUOUS green (0+0 == 0); a seam that
+    # compares no rows proves nothing, so assert the rows EXIST too.
+    rows = [ el.attrib.get("n") or el.attrib.get("name") or el.text or "" for el in root.iter() if el.tag == "d" ]
+    if not rows:
+        problems.append(f"{name}: the page carries no <d> rows — the seam comparison below would be vacuous")
+    return rows
 
 p0 = sigs("g_budget_p0"); p3 = sigs("g_budget_p3"); p6 = sigs("g_budget_p6")
 if p0 is not None and p3 is not None and p6 is not None:
