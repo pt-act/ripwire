@@ -2191,6 +2191,7 @@ inline std::string renderForHdrRowsXml( const rw::IngestResult& ing, const std::
     // runForLens charges x.size() in every budget sum and emits x itself, so "no row" and "no bytes" must agree
     ENSURES( !x.empty(), "renderForHdrRowsXml: rows resolved but nothing rendered" );
     return x;
+}
 
 // ── THE BUDGETED-BUNDLE CANDIDATE PAGE (paging PoC, upstream issue #294, corrected scope) ───────────
 // Shared by runForLens (--for) and runPackTask (--pack-task): the caller has ALREADY decided this run is
@@ -2426,7 +2427,7 @@ std::optional<int> runForLens( const MainDispatch& d )
         // showed completes answers where a body cannot. It owns its own <files> root, so it bypasses the whole
         // <ctx> bundle below; cli.h refuses every bundle-shaping flag beside it rather than ignoring one.
         // PAGING-POC (issue #294): under --token-budget an explicit window is NOT the file page — it is
-        // the BUDGETED-BUNDLE CANDIDATE PAGE, served by the branch after lensSurfaceIds below. The file
+        // the BUDGETED-BUNDLE CANDIDATE PAGE, served by the shared inline below. The file
         // page keeps every windowless-budget call exactly as forwidencheck pins it.
         if( ( cfg.pageLimit > 0 || cfg.pageOffset > 0 ) && cfg.tokenBudget == 0 )
         {
