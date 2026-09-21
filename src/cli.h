@@ -3608,7 +3608,11 @@ inline bool honorsPaging( const Config& c ) noexcept
         // FILE-GRAIN widening page. Membership is conditional on purpose: the bare --for bundle keeps honoring
         // --token-budget/--max-tokens/--format=candidates --top-k, which validateShapingFlagsHonored refuses on
         // every paging member — and refuses beside the page too, where no byte ceiling exists to shape against.
-        || ( !c.forTask.empty() && ( c.pageLimit > 0 || c.pageOffset > 0 ) );
+        || ( !c.forTask.empty() && ( c.pageLimit > 0 || c.pageOffset > 0 ) )
+        // PAGING-POC (issue #294): --pack-task joins ONLY under a budgeted window — its candidate page
+        // mirrors --for's (the shared emitForCandidatePage). The bare --pack-task bundle keeps refusing
+        // the pair (it has no window to serve), and a windowless budget run is untouched.
+        || ( c.packTaskFlag && c.tokenBudget != 0 && ( c.pageLimit > 0 || c.pageOffset > 0 ) );
 }
 
 // --limit/--offset on a verb that windows NOTHING. Same accept-then-silently-ignore class as every guard in

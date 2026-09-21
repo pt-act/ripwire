@@ -2191,6 +2191,166 @@ inline std::string renderForHdrRowsXml( const rw::IngestResult& ing, const std::
     // runForLens charges x.size() in every budget sum and emits x itself, so "no row" and "no bytes" must agree
     ENSURES( !x.empty(), "renderForHdrRowsXml: rows resolved but nothing rendered" );
     return x;
+
+// ── THE BUDGETED-BUNDLE CANDIDATE PAGE (paging PoC, upstream issue #294, corrected scope) ───────────
+// Shared by runForLens (--for) and runPackTask (--pack-task): the caller has ALREADY decided this run is
+// a budgeted page (--token-budget != 0 AND an explicit --limit/--offset window) and passes its own
+// lensRank, cliff statistic (adaptiveCut, computed ONCE by the caller — the same statistic --adaptive and
+// the confidence disclosure read), task, route note, root argument and redaction seam. The page serves a
+// window of the ranked candidates through the SAME sigs emitter, splicing the pageview quintet onto the
+// <sigs> opening after render (the open tag is byte-pinned by forbudgetmonotoncheck — serialize.h never
+// gains a paging attribute). The UN-PAGED bundle the callers serve otherwise is untouched and
+// byte-identical: its resume point is its own <sigs shown=>.
+inline int emitForCandidatePage( const rw::IngestResult& ing, const std::vector<float>& lensRank, const rw::AdaptiveCut& forCut,
+                                 std::string_view task, std::string_view routeNote, std::string_view rootArg,
+                                 rw::RedactCounts* redactPtr, std::size_t tokenBudget, int pageLimit, int pageOffset )
+{
+    using namespace rw;   // the file's idiom: function-scoped (verbs_for.h:88 and five more)
+    // the ranked candidate order: ALL ids sorted (score desc, id asc) — the same total order
+    // packSignatures selects with — truncated to the positive-scored candidates (the set the
+    // bundle's cut was against; total= counts it on EVERY page, so a re-decided denominator is
+    // impossible by construction).
+    std::vector<NodeId> candOrder;
+    {
+        const std::size_t S = ing.symbols.size();
+        candOrder.resize( S );
+        for( NodeId i = 0; i < S; ++i ) { candOrder[ i ] = i; }
+        rw::sortutil::radixSortByScoreDescId( candOrder, lensRank );
+        candOrder.resize( std::min( forCut.positiveHits, S ) );
+    }
+    const std::size_t candidateTotal = candOrder.size();
+    const PageWindow                win   = pageWindow( candidateTotal, pageLimit, pageOffset );
+
+    // window the rank copy: candidates inside [win.begin, win.end) keep their score, everything
+    // else sorts below them (-1), so packSignatures' top-N selection serves exactly the window in
+    // rank order — no new selection logic, and the H1 ladder still trims within the page.
+    std::vector<float> pageRank( ing.symbols.size(), -1.0f );
+    for( std::size_t i = win.begin; i < win.end; ++i ) { pageRank[ candOrder[ i ] ] = lensRank[ candOrder[ i ] ]; }
+
+    std::string sigsDoc;
+    const std::size_t sigsBytesBudget = tokenBudget > 0
+        ? ( std::size_t( double( tokenBudget ) * kMinBytesPerToken ) > 600
+              ? std::size_t( double( tokenBudget ) * kMinBytesPerToken ) - 600 : 0 )
+        : 0;
+    bool rendered = false;
+    {
+        // inline capture (preRender the lambda at 2478 is declared below this block): the same
+        // MemoryStream + charge-stream + DISCLOSE-on-failure discipline, kept local so the page
+        // does not depend on declaration order.
+        const std::optional<RedactCounts> redactBefore = redactPtr != nullptr ? std::optional<RedactCounts>( *redactPtr ) : std::nullopt;
+        const auto restoreRedact = [ & ]() noexcept { if( redactBefore ) { *redactPtr = *redactBefore; } };
+        rw::MemoryStream stream;
+        std::FILE* const buffer = rw::openChargeStream( stream );
+        if( buffer == nullptr )
+        {
+            DISCLOSE( "for-page: the sigs render degraded (its budget stream refused) — the page is served as an honest cut" );
+            restoreRedact();
+        }
+        else
+        {
+            packSignatures( buffer, ing, pageRank, int( win.end - win.begin ), sigsBytesBudget, /*metrics=*/true,
+                            nullptr, nullptr, redactPtr,
+                            nullptr, nullptr, nullptr, nullptr,      // Q3 enrichments: page rows are the core sig form
+                            /*rankAdaptivePayload=*/true,
+                            sigsBytesBudget,                          // H1 ladder over the page
+                            nullptr, rootArg,
+                            /*hasRelevanceFloor=*/true, nullptr );
+            const rw::MemoryStreamBytes block = stream.finish();
+            if( !block.isWhole )
+            {
+                DISCLOSE( "for-page: the sigs render degraded (its charge stream was torn) — the page is served as an honest cut" );
+                restoreRedact();
+            }
+            else
+            {
+                sigsDoc.assign( block.bytes );
+                rendered = true;
+            }
+        }
+    }
+    if( !rendered )
+    {
+        return 0;   // DISCLOSE already fired; nothing else ships
+    }
+
+    // rows actually printed: packSignatures writes its own shown= only when its ladder trimmed;
+    // an untrimmed window means every row survived — shown == window size.
+    std::size_t shown = win.end - win.begin;
+    {
+        const std::size_t openEnd = sigsDoc.find( '>' );
+        const std::size_t openBeg = sigsDoc.find( "<sigs" );
+        if( openBeg != std::string::npos && openEnd != std::string::npos && openEnd > openBeg )
+        {
+            const std::string openTag = sigsDoc.substr( openBeg, openEnd - openBeg );
+            const std::size_t shownAt = openTag.find( "shown=\"" );
+            if( shownAt != std::string::npos )
+            {
+                shown = 0;
+                for( std::size_t d = shownAt + 7; d < openTag.size() && openTag[ d ] >= '0' && openTag[ d ] <= '9'; ++d )
+                {
+                    shown = shown * 10 + std::size_t( openTag[ d ] - '0' );
+                }
+            }
+        }
+    }
+
+    // splice the page opening: the page-level quintet REPLACES the window-scoped shown=/total=/
+    // capped= (the page answers in candidate-set arithmetic; the within-page H1 trim is visible
+    // as shown < window). Rows and the close tag are kept verbatim.
+    std::string pageOut;
+    {
+        std::vector<char> escTask;    // ONE scratch buffer PER attribute: escapeXml appends to the
+        std::vector<char> escRoute;    // buffer and returns a view of it, so two calls sharing one
+        std::vector<char> escRoot;    // buffer inside one formatTo arg list race on realloc and
+        const std::string_view taskAttr  = escapeXml( task, escTask );      // mangle each other.
+        const std::string_view routeAttr = escapeXml( routeNote, escRoute );
+        const std::string_view rootAttr  = escapeXml( std::string_view( rootArg ), escRoot );
+        const std::size_t openBeg  = sigsDoc.find( "<sigs" );
+        const std::size_t openEnd  = sigsDoc.find( '>' );
+        const std::size_t keepFrom = ( openBeg != std::string::npos && openEnd != std::string::npos ) ? openEnd + 1 : 0;
+        const bool        below    = forCut.cliffRank > 0 && win.begin >= forCut.cliffRank;
+        const std::string rows     = sigsDoc.substr( keepFrom );   // rows + close, kept verbatim
+        // std::string assembly, NOT a fixed char buffer: the task attribute is caller-controlled
+        // (an escaped 300-char task overflows any sane fixed size, and the first cut of this page
+        // truncated has_more= mid-attribute at 160 bytes — a malformed document shipped as
+        // output). Unbounded is the only honest size here.
+        std::string head = "<sigs task=\"" + std::string( taskAttr ) + "\" route=\"" + std::string( routeAttr )
+                         + "\" shown=\"" + std::to_string( shown ) + "\" total=\"" + std::to_string( candidateTotal )
+                         + "\" capped=\"" + ( shown < candidateTotal ? "1" : "0" )
+                         + "\" has_more=\"" + ( win.end < candidateTotal ? "1" : "0" )
+                         + "\" next_offset=\"" + std::to_string( win.end )
+                         + "\" offset=\"" + std::to_string( win.begin )
+                         + "\" limit=\"" + std::to_string( pageLimit > 0 ? pageLimit : 0 )
+                         + "\" tier=\"" + ( below ? "below-cliff" : "head" ) + "\"";
+        // est_tokens is MEASURED from the page's own final bytes; the tail's digit count feeds
+        // back into the total, so one re-derivation closes the loop (it converges immediately —
+        // a digit count change moves the total by a byte, ~0.42 tokens).
+        std::size_t       estTokens = std::size_t( double( head.size() + rows.size() + 64 ) / kMinBytesPerToken );
+        std::string       tail;
+        std::size_t       tailLen   = 0;
+        for( int pass = 0; pass < 2; ++pass )
+        {
+            tail = " est_tokens=\"" + std::to_string( estTokens )
+                 + "\" budget_tokens=\"" + std::to_string( tokenBudget )
+                 + "\" root=\"" + std::string( rootAttr ) + "\">";
+            tailLen = tail.size();
+            const std::size_t finalEst = std::size_t( double( head.size() + tailLen + rows.size() ) / kMinBytesPerToken );
+            if( finalEst == estTokens ) { break; }
+            estTokens = finalEst;
+        }
+        pageOut.assign( head ).append( tail ).append( rows );
+        const std::size_t pageBytes = pageOut.size();
+        std::fwrite( pageOut.data(), 1, pageOut.size(), stdout );
+        if( estTokens > std::size_t( tokenBudget ) )
+        {
+            // the honest ceiling contract, same shape the bundle's over_ceiling= clause serves:
+            // a page IS an answer under the same budget; say so, never silently exceed it.
+            rw::emitTo( stderr, "ripwire: for-page est_tokens={} exceeds the stated budget={} (the splice "
+                               "reserve was too small) — please report the command line\n", estTokens, tokenBudget );
+        }
+    }
+    return 0;
+    return 0;
 }
 
 std::optional<int> runForLens( const MainDispatch& d )
@@ -2412,166 +2572,12 @@ std::optional<int> runForLens( const MainDispatch& d )
 
         ForConfidence forConf = deriveForConfidence( forCut, forTopN, forHomonymDecline );
 
-        // ── THE BUDGETED-BUNDLE CANDIDATE PAGE (paging PoC, upstream issue #294, corrected scope) ────────
-        // `--for=TASK --token-budget=N` with an EXPLICIT window (--limit / --offset>0) serves a resumable
-        // page over the SAME ranked candidate set the bundle cuts: window [offset, offset+limit) of the
-        // positive-score candidates in (score desc, id asc) order, packed by the SAME sigs emitter —
-        // redaction, notes, doc excerpting, the H1 ladder all reused; this is a WINDOW, not a new surface.
-        // The pageview quintet is spliced onto the <sigs> opening (the rootOpenStr.insert idiom; the open
-        // tag is byte-pinned by forbudgetmonotoncheck, which is why the splice happens HERE, after render,
-        // never inside serialize.h). The UN-PAGED bundle below stays byte-identical: its resume point is
-        // its own <sigs shown=>, so an agent resumes with --offset=<shown>. The cliff is forCut above —
-        // computed ONCE, the same statistic --adaptive and the confidence disclosure read — and a page whose
-        // window starts at/after the cliff carries tier="below-cliff" so cliff-rejected content never
-        // reads as relevant (the packtask.h:1690 two-dialects-one-count lesson). est_tokens is MEASURED and
-        // must not exceed the stated budget (budgetpolicycheck ARM D). Arms: truncvocabcheck (H),
-        // listingpagingcheck (G), budgetpolicycheck (D).
+        // ── THE BUDGETED-BUNDLE CANDIDATE PAGE (paging PoC, issue #294): budget + explicit window ⇒ the
+        // resumable candidate page (shared inline; the un-paged bundle below stays byte-identical).
         if( cfg.tokenBudget != 0 && ( cfg.pageLimit > 0 || cfg.pageOffset > 0 ) )
         {
-            // the ranked candidate order: ALL ids sorted (score desc, id asc) — the same total order
-            // packSignatures selects with — truncated to the positive-scored candidates (the set the
-            // bundle's cut was against; total= counts it on EVERY page, so a re-decided denominator is
-            // impossible by construction).
-            std::vector<NodeId> candOrder;
-            {
-                const std::size_t S = ing.symbols.size();
-                candOrder.resize( S );
-                for( NodeId i = 0; i < S; ++i ) { candOrder[ i ] = i; }
-                rw::sortutil::radixSortByScoreDescId( candOrder, lensRank );
-                candOrder.resize( std::min( forCut.positiveHits, S ) );
-            }
-            const std::size_t candidateTotal = candOrder.size();
-            const PageWindow                win   = pageWindow( candidateTotal, cfg.pageLimit, cfg.pageOffset );
-
-            // window the rank copy: candidates inside [win.begin, win.end) keep their score, everything
-            // else sorts below them (-1), so packSignatures' top-N selection serves exactly the window in
-            // rank order — no new selection logic, and the H1 ladder still trims within the page.
-            std::vector<float> pageRank( ing.symbols.size(), -1.0f );
-            for( std::size_t i = win.begin; i < win.end; ++i ) { pageRank[ candOrder[ i ] ] = lensRank[ candOrder[ i ] ]; }
-
-            std::string sigsDoc;
-            const std::size_t sigsBytesBudget = cfg.tokenBudget > 0
-                ? ( std::size_t( double( cfg.tokenBudget ) * kMinBytesPerToken ) > 600
-                      ? std::size_t( double( cfg.tokenBudget ) * kMinBytesPerToken ) - 600 : 0 )
-                : 0;
-            bool rendered = false;
-            {
-                // inline capture (preRender the lambda at 2478 is declared below this block): the same
-                // MemoryStream + charge-stream + DISCLOSE-on-failure discipline, kept local so the page
-                // does not depend on declaration order.
-                const std::optional<RedactCounts> redactBefore = redactPtr != nullptr ? std::optional<RedactCounts>( *redactPtr ) : std::nullopt;
-                const auto restoreRedact = [ & ]() noexcept { if( redactBefore ) { *redactPtr = *redactBefore; } };
-                rw::MemoryStream stream;
-                std::FILE* const buffer = rw::openChargeStream( stream );
-                if( buffer == nullptr )
-                {
-                    DISCLOSE( "for-page: the sigs render degraded (its budget stream refused) — the page is served as an honest cut" );
-                    restoreRedact();
-                }
-                else
-                {
-                    packSignatures( buffer, ing, pageRank, int( win.end - win.begin ), sigsBytesBudget, /*metrics=*/true,
-                                    nullptr, nullptr, redactPtr,
-                                    nullptr, nullptr, nullptr, nullptr,      // Q3 enrichments: page rows are the core sig form
-                                    /*rankAdaptivePayload=*/true,
-                                    sigsBytesBudget,                          // H1 ladder over the page
-                                    nullptr, flRootArg,
-                                    /*hasRelevanceFloor=*/true, nullptr );
-                    const rw::MemoryStreamBytes block = stream.finish();
-                    if( !block.isWhole )
-                    {
-                        DISCLOSE( "for-page: the sigs render degraded (its charge stream was torn) — the page is served as an honest cut" );
-                        restoreRedact();
-                    }
-                    else
-                    {
-                        sigsDoc.assign( block.bytes );
-                        rendered = true;
-                    }
-                }
-            }
-            if( !rendered )
-            {
-                return 0;   // DISCLOSE already fired; nothing else ships
-            }
-
-            // rows actually printed: packSignatures writes its own shown= only when its ladder trimmed;
-            // an untrimmed window means every row survived — shown == window size.
-            std::size_t shown = win.end - win.begin;
-            {
-                const std::size_t openEnd = sigsDoc.find( '>' );
-                const std::size_t openBeg = sigsDoc.find( "<sigs" );
-                if( openBeg != std::string::npos && openEnd != std::string::npos && openEnd > openBeg )
-                {
-                    const std::string openTag = sigsDoc.substr( openBeg, openEnd - openBeg );
-                    const std::size_t shownAt = openTag.find( "shown=\"" );
-                    if( shownAt != std::string::npos )
-                    {
-                        shown = 0;
-                        for( std::size_t d = shownAt + 7; d < openTag.size() && openTag[ d ] >= '0' && openTag[ d ] <= '9'; ++d )
-                        {
-                            shown = shown * 10 + std::size_t( openTag[ d ] - '0' );
-                        }
-                    }
-                }
-            }
-
-            // splice the page opening: the page-level quintet REPLACES the window-scoped shown=/total=/
-            // capped= (the page answers in candidate-set arithmetic; the within-page H1 trim is visible
-            // as shown < window). Rows and the close tag are kept verbatim.
-            std::string pageOut;
-            {
-                std::vector<char> escTask;    // ONE scratch buffer PER attribute: escapeXml appends to the
-                std::vector<char> escRoute;    // buffer and returns a view of it, so two calls sharing one
-                std::vector<char> escRoot;    // buffer inside one formatTo arg list race on realloc and
-                const std::string_view taskAttr  = escapeXml( cfg.forTask, escTask );      // mangle each other.
-                const std::string_view routeAttr = escapeXml( routeNoteRaw, escRoute );
-                const std::string_view rootAttr  = escapeXml( std::string_view( flRootArg ), escRoot );
-                const std::size_t openBeg  = sigsDoc.find( "<sigs" );
-                const std::size_t openEnd  = sigsDoc.find( '>' );
-                const std::size_t keepFrom = ( openBeg != std::string::npos && openEnd != std::string::npos ) ? openEnd + 1 : 0;
-                const bool        below    = forCut.cliffRank > 0 && win.begin >= forCut.cliffRank;
-                const std::string rows     = sigsDoc.substr( keepFrom );   // rows + close, kept verbatim
-                // std::string assembly, NOT a fixed char buffer: the task attribute is caller-controlled
-                // (an escaped 300-char task overflows any sane fixed size, and the first cut of this page
-                // truncated has_more= mid-attribute at 160 bytes — a malformed document shipped as
-                // output). Unbounded is the only honest size here.
-                std::string head = "<sigs task=\"" + std::string( taskAttr ) + "\" route=\"" + std::string( routeAttr )
-                                 + "\" shown=\"" + std::to_string( shown ) + "\" total=\"" + std::to_string( candidateTotal )
-                                 + "\" capped=\"" + ( shown < candidateTotal ? "1" : "0" )
-                                 + "\" has_more=\"" + ( win.end < candidateTotal ? "1" : "0" )
-                                 + "\" next_offset=\"" + std::to_string( win.end )
-                                 + "\" offset=\"" + std::to_string( win.begin )
-                                 + "\" limit=\"" + std::to_string( cfg.pageLimit > 0 ? cfg.pageLimit : 0 )
-                                 + "\" tier=\"" + ( below ? "below-cliff" : "head" ) + "\"";
-                // est_tokens is MEASURED from the page's own final bytes; the tail's digit count feeds
-                // back into the total, so one re-derivation closes the loop (it converges immediately —
-                // a digit count change moves the total by a byte, ~0.42 tokens).
-                std::size_t       estTokens = std::size_t( double( head.size() + rows.size() + 64 ) / kMinBytesPerToken );
-                std::string       tail;
-                std::size_t       tailLen   = 0;
-                for( int pass = 0; pass < 2; ++pass )
-                {
-                    tail = " est_tokens=\"" + std::to_string( estTokens )
-                         + "\" budget_tokens=\"" + std::to_string( cfg.tokenBudget )
-                         + "\" root=\"" + std::string( rootAttr ) + "\">";
-                    tailLen = tail.size();
-                    const std::size_t finalEst = std::size_t( double( head.size() + tailLen + rows.size() ) / kMinBytesPerToken );
-                    if( finalEst == estTokens ) { break; }
-                    estTokens = finalEst;
-                }
-                pageOut.assign( head ).append( tail ).append( rows );
-                const std::size_t pageBytes = pageOut.size();
-                std::fwrite( pageOut.data(), 1, pageOut.size(), stdout );
-                if( estTokens > std::size_t( cfg.tokenBudget ) )
-                {
-                    // the honest ceiling contract, same shape the bundle's over_ceiling= clause serves:
-                    // a page IS an answer under the same budget; say so, never silently exceed it.
-                    rw::emitTo( stderr, "ripwire: for-page est_tokens={} exceeds the stated budget={} (the splice "
-                                       "reserve was too small) — please report the command line\n", estTokens, cfg.tokenBudget );
-                }
-            }
-            return 0;
+            return emitForCandidatePage( ing, lensRank, forCut, cfg.forTask, routeNoteRaw, flRootArg,
+                                         redactPtr, cfg.tokenBudget, cfg.pageLimit, cfg.pageOffset );
         }
         // L-W: coverage= rides the SAME sentence and the SAME byte exemption as confidence=/margin_pct= — but ONLY
         // on a THIN answer (owner decision 2026-09-12: present-only). The thin verdict is decided HERE, from the
@@ -3918,6 +3924,22 @@ std::optional<int> runPackTask( const MainDispatch& d )
     in.notesDegraded        = d.notesDegraded;   // L3 follow-up (CodeRabbit 4053600616)
     // R-E (2026-08-17 harvest): same single-root condition every other verb's root= uses (sarif.h).
     in.rootArg = ( ing.realPaths.empty() && cfg.roots.size() == 1 ) ? cfg.roots[0] : std::string_view();
+
+    // ── THE BUDGETED-BUNDLE CANDIDATE PAGE (paging PoC, issue #294): --pack-task under --token-budget
+    // with an explicit window pages its ranked candidates, mirroring --for (the shared inline). The cliff
+    // statistic is computed here ONCE (the same call --for's disclosure uses); --partition and a window
+    // refuse together — a partitioned bundle has N+1 slices and no single candidate order to page.
+    if( cfg.tokenBudget != 0 && ( cfg.pageLimit > 0 || cfg.pageOffset > 0 ) )
+    {
+        if( cfg.partitionCount > 0 )
+        {
+            rw::emitRaw( stderr, "ripwire: --partition and a --limit/--offset window are mutually exclusive — a partitioned bundle has N+1 slices and no single candidate order to page; drop one\n" );
+            return 1;
+        }
+        const AdaptiveCut packCut = adaptiveCut( lr.rank, 5, std::size_t( cfg.packTopN > 0 ? cfg.packTopN : kForLensDefaultTopN ), true );
+        return emitForCandidatePage( ing, lr.rank, packCut, task, lr.routeNote, in.rootArg,
+                                     d.redactPtr, cfg.tokenBudget, cfg.pageLimit, cfg.pageOffset );
+    }
 
     // --partition=N: the FAN-OUT form. Same lens ranking, same PackTaskInputs, same
     // assembler; partition.h only decides WHICH slice each of the N+1 bundles is masked to and how the
