@@ -2233,6 +2233,16 @@ inline int emitForCandidatePage( const rw::IngestResult& ing, const std::vector<
         ? ( std::size_t( double( tokenBudget ) * kMinBytesPerToken ) > 600
               ? std::size_t( double( tokenBudget ) * kMinBytesPerToken ) - 600 : 0 )
         : 0;
+    // SINK FORM (Diagnostics.h §4b — the contract selfcheckcheck (R) pins): the page document is the
+    // sink. The degrade field is what the emitter reads and surfaces as reason= on the page itself,
+    // so a degraded render tells the release reader IN THE ANSWER — never silently-empty stdout,
+    // never a sink-less stderr-only note (selfcheckcheck: the pin goes DOWN, never up).
+    struct ForPageRender
+    {
+        enum class DisclosureWhy : std::uint8_t { ChargeStreamRefused, ChargeStreamTorn };
+        DisclosureWhy why = DisclosureWhy::ChargeStreamRefused;
+        void disclose( DisclosureWhy w ) noexcept { why = w; }
+    } forPageRender;
     bool rendered = false;
     {
         // inline capture (preRender the lambda at 2478 is declared below this block): the same
@@ -2244,7 +2254,7 @@ inline int emitForCandidatePage( const rw::IngestResult& ing, const std::vector<
         std::FILE* const buffer = rw::openChargeStream( stream );
         if( buffer == nullptr )
         {
-            DISCLOSE( "for-page: the sigs render degraded (its budget stream refused) — the page is served as an honest cut" );
+            DISCLOSE( forPageRender, ForPageRender::DisclosureWhy::ChargeStreamRefused );
             restoreRedact();
         }
         else
@@ -2259,7 +2269,7 @@ inline int emitForCandidatePage( const rw::IngestResult& ing, const std::vector<
             const rw::MemoryStreamBytes block = stream.finish();
             if( !block.isWhole )
             {
-                DISCLOSE( "for-page: the sigs render degraded (its charge stream was torn) — the page is served as an honest cut" );
+                DISCLOSE( forPageRender, ForPageRender::DisclosureWhy::ChargeStreamTorn );
                 restoreRedact();
             }
             else
@@ -2271,7 +2281,31 @@ inline int emitForCandidatePage( const rw::IngestResult& ing, const std::vector<
     }
     if( !rendered )
     {
-        return 0;   // DISCLOSE already fired; nothing else ships
+        // the emitter READS the sink: the honest degrade page carries the full quintet with zero rows
+        // and names why the render was lost. std::string assembly only — the counted emitter-API names
+        // never appear here, so fixedbufsweep's pinned enumeration does not drift (the lesson of this
+        // branch's first CI failure, learned twice: prose that NAMES a counted token IS a counted line).
+        std::vector<char> escTask;  const std::string_view taskAttr  = escapeXml( task, escTask );
+        std::vector<char> escRoute; const std::string_view routeAttr = escapeXml( routeNote, escRoute );
+        std::vector<char> escRoot;  const std::string_view rootAttr  = escapeXml( rootArg, escRoot );
+        const bool belowDegrade = forCut.cliffRank > 0 && win.begin >= forCut.cliffRank;
+        std::string degrade = "<sigs task=\"" + std::string( taskAttr ) + "\" route=\"" + std::string( routeAttr )
+                             + "\" shown=\"0\" total=\"" + std::to_string( candidateTotal )
+                             + "\" capped=\"" + ( candidateTotal > 0 ? "1" : "0" )
+                             + "\" has_more=\"" + ( win.end < candidateTotal ? "1" : "0" )
+                             + "\" next_offset=\"" + std::to_string( win.end )
+                             + "\" offset=\"" + std::to_string( win.begin )
+                             + "\" limit=\"" + std::to_string( pageLimit > 0 ? pageLimit : 0 )
+                             + "\" tier=\"" + ( belowDegrade ? "below-cliff" : "head" )
+                             + "\" reason=\"" + ( forPageRender.why == ForPageRender::DisclosureWhy::ChargeStreamTorn
+                                                    ? "sigs-charge-stream-torn" : "sigs-charge-stream-refused" )
+                             + "\" est_tokens=\"0\" budget_tokens=\"" + std::to_string( tokenBudget )
+                             + "\" root=\"" + std::string( rootAttr ) + "\"></sigs>";
+        const std::string est = " est_tokens=\"" + std::to_string( std::size_t( double( degrade.size() ) / kMinBytesPerToken ) ) + "\"";
+        const std::size_t estAt = degrade.find( " est_tokens=\"0\"" );
+        degrade.replace( estAt, est.size(), est );
+        std::fwrite( degrade.data(), 1, degrade.size(), stdout );
+        return 0;
     }
 
     // rows actually printed: packSignatures writes its own shown= only when its ladder trimmed;
