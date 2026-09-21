@@ -228,13 +228,16 @@ Both serve the CLI's own renderer rather than a second implementation of it:
 
 Both declare `legend`, so they take their posture per request like the rest of the family — absent means
 compact, `legend:"full"` restores the prose legend byte-for-byte, and the rows do not move between the two.
-The `tools/list` manifest grows 43,500 → 46,493 B (method: `test/mcpmanifestcheck.sh`'s own formula — the
+The `tools/list` manifest grows 43,500 → 46,677 B (method: `test/mcpmanifestcheck.sh`'s own formula — the
 compact JSON length of the served `tools` array — over one `tools/list` response on this repository's binary
-before and after; its 46,600 B ceiling is unmoved, with 107 B of headroom — the 46,371 B this entry first
-recorded was superseded, same round, by a `rank_by` description fix (`test/mcpmanifestcheck.sh`'s own
-RE-ANCHORED/TRAIN 10 FIX ROUND comment history), and this prose copy went uncorrected for five days before
-being re-derived by hand; `test/mcpmanifestcheck.sh` arm `(1b)` now asserts this figure against a live
-`tools/list` measurement so that rot is a gate failure, not a future rediscovery).
+before and after; the ceiling moves 46,600 → 46,700 B for the one sanctioned case that moves it: explore's
+`limit`/`offset` join `for`'s as DECLARED arguments (upstream issue #294's parity ask, PR #3) — two schema
+properties, +184 B over the 46,493 B the previous round recorded, with 23 B of headroom — the 46,371 B this
+entry first recorded was superseded, same round, by a `rank_by` description fix
+(`test/mcpmanifestcheck.sh`'s own RE-ANCHORED/TRAIN 10 FIX ROUND comment history), and this prose copy went
+uncorrected for five days before being re-derived by hand; `test/mcpmanifestcheck.sh` arm `(1b)` now
+asserts this figure against a live `tools/list` measurement so that rot is a gate failure, not a future
+rediscovery).
 
 ### Fixed — `rank_by` over MCP no longer answers a different ranking than `--rank-by` on a tree with uncommitted changes
 

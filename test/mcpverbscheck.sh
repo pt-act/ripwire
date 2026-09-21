@@ -759,6 +759,48 @@ EOF
     fi
 fi
 
+# ── (6d) EXPLORE PAGING PARITY (upstream issue #294, corrected scope) ────────────────────────────
+# Measured 2026-09-19: MCP `for` serves the bounded widening page today (limit=5 → <files … quintet …
+# next=…>); MCP `explore` REFUSES limit outright ("unknown field: 'limit' — explore accepts: path, paths,
+# task, budget_tokens, partition, legend, no_route"). The parity ask is part of issue #294: explore
+# should accept the same bounded limit/offset argument path (mcpverbs.h:327-333) for serves it uses.
+# RED on the pre-change binary by design (gate before code): today the call errors with unknown field.
+echo "=== (6d) explore accepts the bounded paging arguments (parity with for) ==="
+EXPLORE_LIMIT_MSGS='{"jsonrpc":"2.0","id":1,"method":"initialize"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"explore","arguments":{"path":"'"$CORPUS"'","task":"engine scheduling run loop","limit":5}}}'
+EXPLORE_LIMIT_OUT="$( printf '%s\n' "$EXPLORE_LIMIT_MSGS" | "$BIN" --mcp 2>/dev/null | tail -1 )"
+EXPLORE_LIMIT_TXT="$( printf '%s' "$EXPLORE_LIMIT_OUT" | python3 -c '
+import sys, json
+try:
+    r = json.loads( sys.stdin.read() )
+except Exception:
+    print( "PARSE_ERROR" ); sys.exit(0)
+if "error" in r:
+    print( "MCPError:" + str( r["error"].get("message", "") )[:80] ); sys.exit(0)
+try:
+    print( r["result"]["content"][0]["text"][:400] )
+except Exception:
+    print( "NO_TEXT" )
+' )"
+case "$EXPLORE_LIMIT_TXT" in
+    MCPError:*|PARSE_ERROR|NO_TEXT)
+        no "(6d) explore refuses/errs on limit: ${EXPLORE_LIMIT_TXT:0:100} — for serves the bounded page; explore must accept the same argument path (issue #294, corrected ask (b))"
+        ;;
+    *next_offset=*|*has_more=*)
+        ok "(6d) explore accepts limit and serves a pageview-quintet answer"
+        ;;
+    *)
+        no "(6d) explore accepted limit but the answer carries no quintet — accepted-and-ignored is the pagingsweepcheck G2 honesty hole, not parity"
+        ;;
+esac
+# mutation: the branch shape can fail — an accepted-but-quintet-free answer must be SEEN (the third
+# case above IS the mutation, exercised against a fabricated empty text by construction).
+MUT_TXT="ok no-quintet"
+case "$MUT_TXT" in
+    *next_offset=*|*has_more=*) no "(6d) mutation VACUOUS: bare text matched the quintet branch" ;;
+    *) ok "(6d) mutation: accepted-but-quintet-free falls to the honest red branch" ;;
+esac
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 echo
 if [ "$fail" -eq 0 ]; then

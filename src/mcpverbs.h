@@ -3950,7 +3950,8 @@ inline std::pair<std::string, std::string> qualityBaselineJson( const std::strin
 // value outside 2..16, which is silently clamped OFF rather than erroring an otherwise valid explore call)
 // ⇒ the plain single-bundle form, byte-identical to before.
 inline std::string packTaskText( const std::string& root, const std::string& task, std::size_t budgetTokens,
-                                 RedactCounts* redact = nullptr, std::uint32_t partitionCount = 0, bool noRoute = false )
+                                 RedactCounts* redact = nullptr, std::uint32_t partitionCount = 0, bool noRoute = false,
+                                 int pageLimit = 0, int pageOffset = 0 )
 {
     const McpIndex&     ix  = getIndex( root );
     const IngestResult& ing = ix.ing;
@@ -3977,6 +3978,19 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
                                                                               0, 0, {}, &lr.evidence );
     // §L10b + verify-wave2 F6: same trim as the other route= construction sites — neither bracket.
     lr.routeNote = routeNoteOf( rc, shape, noRoute );   // row 6: the route CODE, ONE producer (filter.h)
+
+    // PAGING-POC (issue #294, ask (b)): explore's limit/offset parity with `for` — the FILE-GRAIN WIDENING
+    // PAGE the for twin serves (computeForFilePage/renderForFilePageXml, forpage.h) on THIS lr, so the two
+    // dialects cannot serve a different page (the same one-implementation rule the for twin's L-W block
+    // states). Its own <files> root; nothing below runs.
+    if( pageLimit > 0 || pageOffset > 0 )
+    {
+        const std::string_view mcpRootArg = ing.realPaths.empty() ? std::string_view( root ) : std::string_view();
+        const ForFilePage filePage = computeForFilePage( ing, lr.rank, lr.evidence );
+        const std::string pageRootOpen = ctxRootOpen( task, lr.routeNote, mcpRootArg );
+        return renderForFilePageXml( ing, filePage, ForPageRenderParts{ task, pageRootOpen, forCoveragePct( lr.evidence, topLensId( lr.rank ) ),
+                                                                        pageLimit, pageOffset, mcpRootArg, /*compactLegend=*/false } );
+    }
 
     // input blow-up guard disclosure (lexical.h kMaxUniqueQueryTerms/dedupeQueryTerms) — same channel/
     // attribute names as the other two --for/--pack-task surfaces.

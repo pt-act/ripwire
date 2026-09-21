@@ -1985,6 +1985,20 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                 // `pack_task` is the dispatch-only alias (same branch, not separately advertised in tools/list above).
                 else if( ( name == "explore" || name == "pack_task" ) && !path.empty() && !task.empty() )
                 {
+                    // PAGING-POC (issue #294, ask (b)): explore's limit/offset — the same bounded pair the
+                    // `for` twin takes (mcpPageArgs → pageWindow), refused-together with partition: a
+                    // partitioned bundle has N+1 slices and no single page to walk.
+                    const McpPageParse explorePage = mcpPageArgs( args );
+                    if( !explorePage.refusal.empty() )
+                    {
+                        resp = errResultMsg( -32602, explorePage.refusal );
+                    }
+                    else if( ( explorePage.page.limit > 0 || explorePage.page.offset > 0 ) && partitionCount > 0 )
+                    {
+                        resp = errResult( -32602, "partition and limit/offset are mutually exclusive — a partitioned bundle has N+1 slices and no single page to walk" );
+                    }
+                    else
+                    {
                     // W3FIX H4: `partition` used to be a bare `std::uint32_t( partitionArg )` cast — N3's
                     // radius bug, one field over — so partition:4294967299 ran a 3-way fan-out and
                     // partition:2^32 served a single bundle, both silently. The band is a DECLARED domain now
@@ -1995,7 +2009,9 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                     static_assert( kMcpRecallTopKMax == 1000,
                                    "the top_k refusal names the band 1..1000 in mcprefusal.h's kMcpValueFields and in the "
                                    "tools/list memory_recall stanza — move all three together" );
-                    resp = textResult( packTaskText( path, task, budgetTokens, redactPtr, partitionCount, noRoute ) );
+                    resp = textResult( packTaskText( path, task, budgetTokens, redactPtr, partitionCount, noRoute,
+                                                     explorePage.page.limit, explorePage.page.offset ) );
+                    }
                 }
                 // L4: `from_trace` — maps a pasted stack-trace/sanitizer/compiler-error TEXT onto indexed symbols
                 // (fromTraceBundleText, tracelocus.h) — the SAME assembler --from-trace's CLI path calls.
