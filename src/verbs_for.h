@@ -2301,7 +2301,7 @@ inline int emitForCandidatePage( const rw::IngestResult& ing, const std::vector<
     {
         std::vector<char> escTask;    // ONE scratch buffer PER attribute: escapeXml appends to the
         std::vector<char> escRoute;    // buffer and returns a view of it, so two calls sharing one
-        std::vector<char> escRoot;    // buffer inside one formatTo arg list race on realloc and
+        std::vector<char> escRoot;    // buffer inside one emit call's argument list race on realloc and
         const std::string_view taskAttr  = escapeXml( task, escTask );      // mangle each other.
         const std::string_view routeAttr = escapeXml( routeNote, escRoute );
         const std::string_view rootAttr  = escapeXml( std::string_view( rootArg ), escRoot );
