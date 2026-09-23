@@ -801,6 +801,58 @@ case "$MUT_TXT" in
     *) ok "(6d) mutation: accepted-but-quintet-free falls to the honest red branch" ;;
 esac
 
+# ── (6e)/(6f) MCP BUDGETED-BUNDLE CANDIDATE PAGE (issue #294 follow-up: the twins) ────────────────
+# The CLI --for/--pack-task serve the candidate page under budget+window (PR #3, merged). The MCP twins
+# must not diverge. Measured 2026-09-23 on this binary, before this arm's implementation:
+#   * MCP `for` {budget_tokens, limit} REFUSES ("limit/offset select the file page, which has no token
+#     budget to shape against") — honest, but no page.
+#   * MCP `explore` {budget_tokens, limit} serves the BUDGETLESS FILE PAGE with budget_tokens silently
+#     ignored — the accept-and-ignore class (the exact hole W3FIX M4 closed for budget_aliases).
+# Both arms demand the SAME contract the CLI serves: the <sigs>-rooted candidate page with the pageview
+# quintet, tier=, and est_tokens within the stated budget. RED until the twins land.
+for_twins_budget_page()
+{
+    local verb="$1"
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+         '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"'"$verb"'","arguments":{"path":"'"$CORPUS"'","task":"engine scheduling run loop","budget_tokens":600,"limit":3}}}' \
+        | "$BIN" --mcp 2>/dev/null | tail -1 | python3 -c '
+import sys, json
+try:    r = json.loads( sys.stdin.read() )
+except Exception: print( "PARSE_ERROR" ); sys.exit(0)
+if "error" in r: print( "MCPError:" + str( r["error"].get("message","") )[:90] ); sys.exit(0)
+try:    t = r["result"]["content"][0]["text"]
+except Exception: print( "NO_TEXT" ); sys.exit(0)
+print( t.lstrip()[ : 400 ] )
+'
+}
+for verb in for explore; do
+    OUT="$( for_twins_budget_page "$verb" )"
+    case "$OUT" in
+        "<sigs "*)
+            Q=0; for k in shown= total= capped= has_more= next_offset= tier=; do
+                case "$OUT" in *"$k"*) ;; *) Q=1 ;; esac
+            done
+            if [ "$Q" = 0 ]; then
+                ok "(6e) MCP $verb {budget_tokens, limit} serves the candidate page (quintet + tier)"
+            else
+                no "(6e) MCP $verb served a <sigs page but the quintet/tier is incomplete: ${OUT:0:120}"
+            fi ;;
+        "<files "*)
+            no "(6e) MCP $verb {budget_tokens, limit} served the BUDGETLESS FILE PAGE with budget_tokens ignored — accept-and-ignore; the budgeted window must serve the candidate page" ;;
+        MCPError:*|PARSE_ERROR|NO_TEXT)
+            no "(6e) MCP $verb {budget_tokens, limit}: ${OUT:0:110} — the CLI serves the candidate page; the twin must not diverge" ;;
+        *)
+            no "(6e) MCP $verb {budget_tokens, limit}: unrecognized answer shape: ${OUT:0:110}" ;;
+    esac
+done
+# mutation: the branch shape can fail — a bare <files page must be SEEN as the ignore hole (the case
+# above IS the mutation, exercised against the live pre-change binary by explore's current behavior).
+MUT_SHAPE="<files task="x" shown="3""
+case "$MUT_SHAPE" in
+    "<files "*) ok "(6e) mutation: a <files answer under budget+window IS detected as the ignore hole" ;;
+    *)         no "(6e) mutation VACUOUS: the <files branch cannot fire" ;;
+esac
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 echo
 if [ "$fail" -eq 0 ]; then
