@@ -563,6 +563,32 @@ if p0 is not None and p3 is not None and p6 is not None:
     if not problems:
         print(f"  PASS  (G) seam: {len(whole)} candidate rows, two pages == the whole, rank order, no overlap")
 
+# ARM B2 (issue #294 follow-up): the candidate page carries next= — the RESUMABLE ARGV, the same
+# contract the file page's next= serves (forwidencheck arm (5) reproduces its page from it). The handle
+# must name the offset the machine attribute next_offset= declares, so a client that pastes it walks the
+# exact continuation. RED until the page grows the attribute (next_offset= alone is machine-only).
+import re as _re
+next_attr = None; next_offset_attr = None
+for name in ("g_budget_p0", "g_budget_p3"):
+    path = os.path.join(tmp, name)
+    if not os.path.exists(path) or os.path.getsize(path) == 0: continue
+    raw = open(path, encoding="utf-8", errors="replace").read()
+    # scope to the ROOT OPENING TAG (rows carry their own next= expand hints — the arm's first cut
+    # read the row's handle and mis-filed it as the page's)
+    o = raw.find( "<sigs" );  oend = raw.find( ">", o )
+    opentag = raw[ o : oend ] if o >= 0 and oend > o else ""
+    m = _re.search(r' next="([^"]*)"', opentag);  n = _re.search(r' next_offset="(\d+)"', opentag)
+    if m: next_attr = m.group(1)
+    if n: next_offset_attr = n.group(1)
+    if next_attr and next_offset_attr:
+        if ( "--offset=" + next_offset_attr ) not in next_attr:
+            problems.append(f"next= does not name the declared continuation: next={next_attr!r} vs next_offset={next_offset_attr}")
+        else:
+            print(f"  PASS  (G2) next= names the exact continuation (--offset={next_offset_attr})")
+        break
+if not next_attr:
+    problems.append("the candidate page root carries no next= — the resumable argv handle the file page's next= contract serves (next_offset= alone is machine-only)")
+
 # mutation: the seam shape can fail — an overlapping pair of fabricated pages must be DETECTED
 mut_a, mut_b = ["a", "b", "c"], ["b", "c", "d"]
 if len(set(mut_a) & set(mut_b)) != 2:
