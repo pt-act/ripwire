@@ -1722,10 +1722,9 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                     // --token-budget beside --limit — the page has no byte ceiling to shape against.
                     resp = pagedResult( [ & ]( McpPageArgs pg )
                     {
-                        if( ( pg.limit > 0 || pg.offset > 0 ) && budgetArg.isPresent )
-                        {
-                            return errResultMsg( -32602, "for: limit/offset select the file page, which has no token budget to shape against — drop budget_tokens, or drop limit/offset for the budgeted bundle" );
-                        }
+                        // PAGING-POC follow-up (issue #294): budget + window no longer refuses —
+                        // forTaskText serves the budgeted-bundle CANDIDATE PAGE for it (the CLI twin's
+                        // own document); the budgetless FILE PAGE still answers a windowless-budget call.
                         const std::optional<std::string> answer = forTaskText( path, task, redactPtr,
                                                                                 budgetArg.isPresent ? std::size_t( budgetArg.value ) : 0, noRoute, pg,
                                                                                 sections );   // L2: "" (default) = stub; the validated closed set otherwise

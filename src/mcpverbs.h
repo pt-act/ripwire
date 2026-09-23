@@ -1857,6 +1857,16 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
     const std::string_view mcpRootArg = ing.realPaths.empty() ? std::string_view( root ) : std::string_view();
     if( page.limit > 0 || page.offset > 0 )
     {
+        // PAGING-POC follow-up (issue #294): budget + window is NOT this file page — it is the
+        // BUDGETED-BUNDLE CANDIDATE PAGE, the same document the CLI --for serves (forpage.h's
+        // forCandidatePageDoc, one implementation for every dialect). Serving the budgetless file
+        // page here would ignore budget_tokens — the accept-and-ignore class (mcpverbscheck 6e).
+        if( budgetTokens > 0 )
+        {
+            const AdaptiveCut cut = adaptiveCut( lensRank, 5, std::size_t( forTopN ), /*scanFullDistribution=*/true );
+            return forCandidatePageDoc( ing, lensRank, cut, task, routeNoteOf( rc, shape, noRoute ), mcpRootArg,
+                                        redact, budgetTokens, page.limit, page.offset );
+        }
         const ForFilePage filePage = computeForFilePage( ing, lensRank, mcpEvidence );
         // PR #215 review item 4: this page composed "routed: " + rc.reason by hand and so answered in a spelling
         // row 6 retired everywhere else — a parity break with the CLI page AND with this server's own bundle two
@@ -3986,6 +3996,15 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
     if( pageLimit > 0 || pageOffset > 0 )
     {
         const std::string_view mcpRootArg = ing.realPaths.empty() ? std::string_view( root ) : std::string_view();
+        // PAGING-POC follow-up (issue #294): budget + window is the CANDIDATE PAGE, not this file
+        // page — before this branch, explore {budget_tokens, limit} served the budgetless file page
+        // with the budget silently ignored (mcpverbscheck 6e's recorded red).
+        if( budgetTokens > 0 )
+        {
+            const AdaptiveCut cut = adaptiveCut( lr.rank, 5, std::size_t( kForLensDefaultTopN ), /*scanFullDistribution=*/true );
+            return forCandidatePageDoc( ing, lr.rank, cut, task, lr.routeNote, mcpRootArg,
+                                        redact, budgetTokens, pageLimit, pageOffset );
+        }
         const ForFilePage filePage = computeForFilePage( ing, lr.rank, lr.evidence );
         const std::string pageRootOpen = ctxRootOpen( task, lr.routeNote, mcpRootArg );
         return renderForFilePageXml( ing, filePage, ForPageRenderParts{ task, pageRootOpen, forCoveragePct( lr.evidence, topLensId( lr.rank ) ),
