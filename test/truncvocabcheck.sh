@@ -559,6 +559,15 @@ for name in ("for_budget_p0w", "for_budget_page", "pack_budget_page"):
         problems.append(f'{name}: capped="{a["capped"]}" is not the 0|1 bit (rule 3)')
     if int(a["shown"]) > int(a["total"]):
         problems.append(f'{name}: shown={a["shown"]} > total={a["total"]} — a page cannot show more than the candidate set')
+    # issue #294 ruling, suggestions 1+3: above_cliff (the head-tier count, next to total=) and the
+    # at= index stamp (which index answered; a consumer compares across pages instead of mixing two
+    # rankings silently). above_cliff must be < total unless the whole set is head-tier.
+    if "above_cliff" not in a:
+        problems.append(f'{name}: paged root lacks above_cliff= — the ruling\'s suggestion 1 (decide from page 1 whether the remainder is worth fetching)')
+    elif int(a["above_cliff"]) >= int(a["total"]) and int(a["total"]) > 0:
+        problems.append(f'{name}: above_cliff={a["above_cliff"]} >= total={a["total"]} — the boundary is not inside the set')
+    if "at" not in a:
+        problems.append(f'{name}: paged root lacks at= — the index stamp the ruling\'s suggestion 3 names (a stale continuation must be detectable, not silent)')
     # ARM C of the paging spec, housed here because THIS gate owns the <bodies> rule-5 vocabulary (the
     # §B8.3 sweep): within a candidate page, a body byte-trim must still disclose shown=/total=/capped=
     # on <bodies> — the candidate cursor advances the SET, rule 5 discloses the within-page byte trim.
