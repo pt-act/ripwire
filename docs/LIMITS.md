@@ -16,10 +16,10 @@ it once, marked `×N`.
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 222 | 89 | 121 | **101** |
+| 229 | 90 | 128 | **101** |
 
 Plus 7 ranking and apportionment parameters, in their own table below: they are not caps, they
-are not counted as caps, and 222 + 7 is the 229 constants this generator parses out of `src/`.
+are not counted as caps, and 229 + 7 is the 236 constants this generator parses out of `src/`.
 
 ## INDEXING, OUTPUT or BOUNDARY — which half of the answer a cap bounds
 
@@ -37,8 +37,8 @@ None of them truncates anything, so none can be judged by `shown=`/`total=` and 
 a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.
 The distinction was named in review on #108 and the rows below now carry it.
 
-The `class` column below carries that answer where it is known. **123 of 222 caps are classified
-(40 INDEXING, 41 OUTPUT, 42 BOUNDARY); the remaining 99 render `—`, which means NOT YET
+The `class` column below carries that answer where it is known. **127 of 229 caps are classified
+(42 INDEXING, 41 OUTPUT, 44 BOUNDARY); the remaining 102 render `—`, which means NOT YET
 CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with
 a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
@@ -88,7 +88,7 @@ refuse to write, so the column cannot be satisfied by pointing at nothing.
 
 ## Caps, by file
 
-One table for each of the 89 files that declare a cap — the 222 caps counted above, and no parameter.
+One table for each of the 90 files that declare a cap — the 229 caps counted above, and no parameter.
 
 ### `src/abicheck.h`
 
@@ -133,7 +133,7 @@ Discloses: **none**
 
 ### `src/cli.h`
 
-Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `modules_capped`, `rows_capped`, `sibs_capped`, `syms_capped`, `tests_capped`, `unflagged_capped`, `untested_capped`
+Discloses: `bridges_capped`, `files_capped`, `inc_capped`, `mention_idents_capped`, `mention_syms_capped`, `modules_capped`, `rows_capped`, `sibs_capped`, `syms_capped`, `tests_capped`, `unflagged_capped`, `untested_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -153,7 +153,7 @@ Discloses: **none**
 
 ### `src/clones.h`
 
-Discloses: **none**
+Discloses: `type3_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -219,7 +219,7 @@ Discloses: **none**
 
 ### `src/docdrift.h`
 
-Discloses: `failed_capped`, `importers_capped`, `weak_capped`
+Discloses: `failed_capped`, `weak_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -484,6 +484,14 @@ Discloses: **none**
 | `kSideDepthStd` | `256` | INDEXING | FFI / routes / bindings — their own guard |
 | `kSideDepthUses` | `512` | INDEXING | value-uses — twice the others, as it always was |
 
+### `src/jsrunner.h`
+
+Discloses: **none**
+
+| constant | value | class | note |
+| --- | --- | --- | --- |
+| `kMaxTsModulesWalked` | `64` | BOUNDARY | past it the walk is cut and the answer is run_unknown="1", never a guessed command |
+
 ### `src/landingplan.h`
 
 Discloses: **none**
@@ -494,7 +502,7 @@ Discloses: **none**
 
 ### `src/lanes.h`
 
-Discloses: `blast_capped`, `tests_capped`
+Discloses: `blast_capped`, `symbols_capped`, `tests_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -586,7 +594,7 @@ Discloses: **none**
 
 ### `src/mcpverbs.h`
 
-Discloses: `blast_radius_capped`, `coboost_commits_capped`, `forgotten_capped`, `hits_capped`, `siblings_capped`, `terms_capped`, `unindexed_candidates_capped`
+Discloses: `blast_radius_capped`, `calledBy_capped`, `coboost_commits_capped`, `forgotten_capped`, `hits_capped`, `siblings_capped`, `terms_capped`, `unindexed_candidates_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -598,15 +606,18 @@ Discloses: `blast_radius_capped`, `coboost_commits_capped`, `forgotten_capped`, 
 
 ### `src/mention.h`
 
-Discloses: `doc_mentions_capped`, `mention_files_capped`, `mention_syms_capped`, `mention_tokens_capped`
+Discloses: `doc_mentions_capped`, `mention_files_capped`, `mention_idents_capped`, `mention_syms_capped`, `mention_tokens_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
 | `kDocMentionMaxAnchors` | `8` | INDEXING | consult only the current top-N anchors |
 | `kDocMentionMaxDocsPerAnchor` | `2` | INDEXING | strongest-anchor-first, capped per anchor |
 | `kDocMentionMaxDocsTotal` | `6` | INDEXING | global cap — bounds token cost regardless of fan-out |
-| `kMentionMaxDirectSymbols` | `8` | INDEXING | directly-named (Scope.name / `name`) symbols, id asc |
+| `kMentionMaxDirectSymbols` | `8` | INDEXING | directly-named (Scope.name / identifier) symbols, task-text order kept |
 | `kMentionMaxFiles` | `4` | INDEXING | strongest evidence only: files named first in the text |
+| `kMentionMaxIdentLifts` | `2` | INDEXING | identifier-resolved symbols admitted per task, task-text order |
+| `kMentionMaxNameFiles` | `3` | BOUNDARY | the same specificity bound as lexical.h kMaxAnchorDefs |
+| `kMentionMaxNamedIdents` | `64` | INDEXING | — |
 | `kMentionMaxRawTokens` | `16` | INDEXING | extraction cap: first N candidate mention tokens, text order |
 | `kMentionMaxSymbolsPerFile` | `3` | INDEXING | per mentioned file: its top symbols by (lens score desc, id asc) |
 
@@ -664,7 +675,7 @@ Discloses: `mention_syms_capped`, `ranking_capped`
 
 ### `src/pageview.h`
 
-Discloses: `count_capped`, `findings_capped`, `hits_capped`, `importers_capped`, `modules_capped`
+Discloses: `count_capped`, `findings_capped`, `hits_capped`, `importers_capped`, `modules_capped`, `symbols_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
@@ -674,8 +685,10 @@ Discloses: `count_capped`, `findings_capped`, `hits_capped`, `importers_capped`,
 | `kImportReachRowCap` | `40` | — | — |
 | `kPageDisclosureCap` | `224` | — | — |
 | `kTreeRowCap` | `80` | — | files, by best symbol's rank: 80 rows ≈ 11.5 KB on this repo (100 = 14.3 KB) |
+| `kTreeSymbolsPerFile` | `3` | — | cut-fix E: --tree's <s> rows per <file>, disclosed by the root's shown_symbols=/symbols_capped= |
 | `kUseSiteRowCap` | `100` | — | — |
-| `kZoomTopModuleCap` | `40` | — | top-level modules, size desc (their children ride along: levels_shown=2) |
+| `kZoomBridgeCap` | `12` | — | cut-fix E: --zoom's <bridge> rows (traffic desc), a secondary listing disclosed by secondaryCutAttrs |
+| `kZoomTopModuleCap` | `40` | — | top-level modules, rank-mass desc then size desc then id (massSizeIdLess; their children ride along: levels_shown=2) |
 
 ### `src/partition.h`
 
@@ -784,6 +797,7 @@ Discloses: **none**
 | constant | value | class | note |
 | --- | --- | --- | --- |
 | `kFieldWalkCap` | `16` | INDEXING | total visited names — bounds depth and width together (methodOnTypeOrBases, memberFieldHides and fieldEntryAt) |
+| `kMaxDepth` | `64` | — | — |
 
 ### `src/search.h`
 
@@ -836,7 +850,7 @@ Discloses: **none**
 
 ### `src/situ.h`
 
-Discloses: `tests_capped`, `untested_capped`
+Discloses: `partners_capped`, `tests_capped`, `untested_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |

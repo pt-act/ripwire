@@ -39,6 +39,52 @@ inline bool isIdentChar( char c ) noexcept
 // ...and the same minus the digits: what may START an identifier.
 inline bool isIdentStart( char c ) noexcept { return isIdentChar( c ) && !( c >= '0' && c <= '9' ); }
 
+// The ONE "is this word spelled like an identifier" test: an interior underscore (snake_case, SCREAMING_CASE —
+// an '_' past the first byte with at least one byte after it) or a lower-to-upper step (camelCase, PascalCase
+// compounds). Plain English words fail both, which is what lets a caller treat a match as the writer's intent to
+// name code rather than a coincidence of vocabulary. Shared by the --for route chooser (lexical.h chooseForRanker)
+// and the named-identifier mention anchor (mention.h) so the two can never disagree about what counts.
+inline bool hasIdentifierShape( std::string_view w ) noexcept
+{
+    for( std::size_t k = 1; k < w.size(); ++k )
+    {
+        const char c = w[k];
+        if( c >= 'A' && c <= 'Z' && w[k - 1] >= 'a' && w[k - 1] <= 'z' )
+        {
+            return true;
+        }
+        if( c == '_' && k + 1 < w.size() )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// rv-test-gate-tsjs: the ONE "find `word` in `text`, bounded on both sides by a byte `isWordByte` says NO
+// to" scan — planlint.h::containsWholeWord and jsrunner.h::detail::matchesWord both needed exactly this
+// walk (--quality-delta's duplication kind found the pair), over two DIFFERENT boundary predicates
+// (identifier bytes only, vs. identifier bytes plus '-' for a hyphenated CLI/npm token like
+// "jest-report-cleaner.js", which the two callers genuinely disagree about) — the WALK is shared, the
+// predicate stays each caller's own, the same shape src/infra/dirwalk.h already uses for its own pair.
+template<class IsWordByte>
+inline bool containsWordBoundedBy( std::string_view text, std::string_view word, IsWordByte isWordByte )
+{
+    std::size_t pos = 0;
+    while( ( pos = text.find( word, pos ) ) != std::string_view::npos )
+    {
+        const bool leftOk = pos == 0 || !isWordByte( text[pos - 1] );
+        const std::size_t end = pos + word.size();
+        const bool rightOk = end >= text.size() || !isWordByte( text[end] );
+        if( leftOk && rightOk )
+        {
+            return true;
+        }
+        ++pos;
+    }
+    return false;
+}
+
 // the head of `f` before its trailing BALANCED `open…close` group, or `f` unchanged when there is no such
 // group or stripping it would eat the name itself. ONE scan for both delimiter pairs (call signatures and
 // template arguments), so the two strippers below can never drift apart. Guards, in order: nothing to strip
@@ -87,6 +133,21 @@ inline std::string_view stripTrailingGroup( std::string_view f, char open, char 
 
 // drop a trailing balanced `<…>` template-argument group: `make<Foo,Bar>` -> `make`.
 inline std::string_view stripTemplateArgs( std::string_view f ) noexcept { return stripTrailingGroup( f, '<', '>' ); }
+
+/// Strip exactly one matched `'...'`/`"..."` pair from `text` — the ONE quote-strip
+/// ingest_relations.h::importSpecifierText (a TS/JS/Python import/require specifier) and
+/// jsrunner.h::isNodeTestStringLiteral (#60's node:test import/require check) both apply to a `string`
+/// node's own span text, kept once rather than duplicated in each (measured: --quality-delta's
+/// duplication kind). Any other shape — no matching quote pair, an unquoted identifier, an empty span —
+/// is returned unchanged.
+inline std::string_view stripQuotePair( std::string_view text ) noexcept
+{
+    if( text.size() >= 2 && ( text.front() == '\'' || text.front() == '"' ) && text.back() == text.front() )
+    {
+        return text.substr( 1, text.size() - 2 );
+    }
+    return text;
+}
 
 } // namespace namesplit
 } // namespace rw

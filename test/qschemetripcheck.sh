@@ -34,6 +34,51 @@ SRC="$ROOT/src/quality.h"
 ING="$ROOT/src/ingest_cache.h"   # extraction-identity constants moved here (2026-08-29 ingest.cpp section split); the hashed CONCAT label keeps its historical spelling so the pin holds
 PIN="$ROOT/test/qschemetrip.hash"
 # RE-PIN LOG (the pin is a bare hash, so its justification has to live here).
+# 2026-09-27, train 21 (#220 part 2 + builtin-bind merged): RE-DERIVED on the merged tree with UPDATE_GOLDEN=1 — the
+#   hash is c451a79f1c…40c2cf, unchanged from #220's entry below: builtin-bind's kQSnapCacheScheme 14 -> 15 and its
+#   declinedCallMayReach exemption move no hashed declaration, and #220's kParserVer 124 is already in the pin.
+# 2026-09-26 (#220 part 2): RE-DERIVED with UPDATE_GOLDEN=1 (hash c451a79f1c…40c2cf). kParserVer 122 -> 124 (a
+#   TS/JS re-export `export … from` is now an Include; 123 stays reserved for #325). Only the extraction-identity
+#   declaration moves — kCacheVersion stays 25, kQSnapCacheScheme stays 14 — so no cached Snapshot MEANING changes.
+# 2026-09-26, lane/builtin-bind-065 fix round: RE-DERIVED with UPDATE_GOLDEN=1. isDeadCandidate is back to its base text;
+#   the declined-call exemption moved into quality::declinedCallMayReach, applied by both dead-set readers after it (and
+#   counted by computeDelta as declined-call-excluded=). The exemption is the same v15 meaning, never released at 15
+#   before this, so no second scheme bump.
+# 2026-09-26, lane/builtin-bind-065: RE-DERIVED with UPDATE_GOLDEN=1. isDeadCandidate gains one exemption — a
+#   definition some call the builtin-method name gate declined could have meant (graph.h BuiltinMethodGate) is
+#   not dead, as it was not before the gate, when that call bound to it by name. The dead SET's meaning moved, so
+#   kQSnapCacheScheme 14 -> 15 in the same commit. kParserVer stays 122 and kCacheVersion stays 25.
+# 2026-09-25 (PR #320/#67, Astro frontmatter, merged in train 20 after #310): RE-DERIVED with UPDATE_GOLDEN=1
+#   (hash 98afcd66a2…c2123ebfc64). kParserVer 121 -> 122 (.astro joins kLangTable, parsed through one included
+#   range over its `---` frontmatter; the PR carried 120, which #150 took first, and #310 took 121). Only the
+#   extraction-identity declaration moves — kCacheVersion stays 25, kQSnapCacheScheme stays 14 — so no cached
+#   Snapshot MEANING changes.
+# 2026-09-24 (PR #310, Ruby attr DSL, merged in train 19 after #150): RE-DERIVED with UPDATE_GOLDEN=1
+#   (hash acd95b16fc…1ac9a7d). kParserVer 120 -> 121 (indexes the Ruby attr-family's names AND the
+#   inline-visibility lift; the PR carried 120, which #150 took first). Only the extraction-identity
+#   declaration moves — kQSnapCacheScheme stays 14, kCacheVersion stays 25 — so no cached Snapshot MEANING
+#   changes. It matches #150's brief 121/25 intermediate below, whose manifest inputs were the same.
+# 2026-09-24, lane/std-nested-binding-150 (#150 delta review): RE-DERIVED with UPDATE_GOLDEN=1 — hash
+#   COLLAPSES BACK to 82d60238f7…08e7e9b (identical to the 2026-09-23 entry below). kParserVer 121 -> 120: the
+#   prior entry's 121 bump is undone, not superseded — 121 never reached main or a release (this whole
+#   sequence happened inside one lane before merge) and this codebase's caches are per-worktree, so no reader
+#   anywhere could hold a cache written under that brief-lived intermediate value. The F1/F2 correctness fix
+#   itself is NOT reverted, only its separate version bump; kParserVer 120 now covers both the original #150
+#   extraction facts and the F1/F2 fix to how one of them is computed, folded into one history entry in
+#   ingest_cache.h. kCacheVersion stays 25. Mirrored in quality.h's kIngestParserVerMirror in the same commit.
+# 2026-09-23 (later same day), lane/std-nested-binding-150 (#150 adversarial review, F1/F2): RE-DERIVED with
+#   UPDATE_GOLDEN=1 (hash acd95b16fc…1ac9a7d — SUPERSEDED the same day by the 2026-09-24 entry above). ONE
+#   manifest input moved again: kParserVer 120 -> 121 — the VALUE RawDef::scopeRootsStd computes changed (a
+#   3+-segment out-of-line std definition's chain root was read from the wrong node; a std-rooted variable's
+#   "has a body" test was fixed to skip non-function kinds), not the record shape, so kCacheVersion stayed 25
+#   and kQSnapCacheScheme was untouched. Mirrored in quality.h's kIngestParserVerMirror in the same commit.
+# 2026-09-23, lane/std-nested-binding-150 (#150) on origin/main 60b65f02: RE-DERIVED with UPDATE_GOLDEN=1
+#   (new hash 82d60238f7…08e7e9b). ONE manifest input moves: ingest_cache.h's kParserVer 119 -> 120 and
+#   kCacheVersion 24 -> 25 (RawRef gains `qualifierRootsStd`, RawDef gains `scopeRootsStd` — the two facts
+#   graph.h::keepStdQualifiedCandidates needs to tell a NESTED std:: call (`std::ranges::move`) from a
+#   same-shaped user namespace), mirrored in quality.h's kIngestParserVerMirror/kIngestCacheVersionMirror in
+#   the same commit (static_assert). This is an EXTRACTION-IDENTITY change only — no Snapshot dead-set/
+#   clone-group/blob-shape semantics moved, so kQSnapCacheScheme is untouched.
 # 2026-09-20, TRAIN 13 (integration/train-13 on main ae6e3e7a: lane/t13-contrib-finish a7281dea,
 #   lane/t13-honesty-fixes 0cf97744): RE-DERIVED ON THE FINAL MERGED TREE with UPDATE_GOLDEN=1.
 #   TWO manifest inputs move, both from the honesty lane:

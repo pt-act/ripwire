@@ -61,10 +61,14 @@
 #      corpus/fuzz sweep found it. Three halves: a STATIC shape audit (no abort() left on the string-stack
 #      path — stack_push / stack_pop / scan_string_start — and both string-start shapes return the push's
 #      verdict); the default map over 700 nested string-opens, generated fresh like arm G, must exit 0
-#      well-formed; and a --match run over a 600-deep file, the RUNTIME half — ingest's
-#      kotlinStringsNestTooDeep prescan refuses such a file before any parse, so the default map no longer
-#      reaches the scanner, while --match's structural-query pass still hands it that input directly
-#      (kotlincheck §12 is the runtime arm for the prescan). kotlin/002: the plain-build exit-0
+#      well-formed; and a RUNTIME half over a 600-deep file. Before #157, ingest's kotlinStringsNestTooDeep
+#      prescan refused such a file before any parse for the default map, but --match's structural-query
+#      pass had no nesting guard and handed the scanner the file directly — the RUNTIME half used to be a
+#      --match run for exactly that reason. #157 closed that gap (every ripwire verb now applies the same
+#      refusal, via IngestResult::nestRefusedFile), so no CLI verb can reach this scanner path anymore; the
+#      runtime half is now a standalone harness that links the vendored kotlin grammar straight to a
+#      tree-sitter core build and calls it directly, bypassing ripwire entirely (kotlincheck §12 is the
+#      runtime arm for the prescan itself, on the CLI side). kotlin/002: the plain-build exit-0
 #      mis-tokenization from an escaped `$` right before a triple-quoted string's closing delimiter
 #      (test/vendorpatchfix/tripledollar.kt, committed like arm F's fixture) — checked via
 #      degraded_parse=0 and that the symbol declared right after the tricky string still extracts.
@@ -87,6 +91,20 @@
 #      exit code decides. On macOS it runs the plain binary under `leaks --atExit`, which reported
 #      "1 leak for 16 total leaked bytes" on the unpatched build and 0 on the patched one, with a
 #      field-free control query that must report 0 on both. Anywhere else it SKIPs by name.
+#   M  `1UL <<` shift-width family audit (static, $BIN-independent) — first tenant: swift/002.
+#      `1UL` is `unsigned long`, 32 bits on LLP64 (Windows); shifting it by an enumerator whose
+#      ordinal is >= 32 (swift's OP_SYMBOL_SUPPRESSOR table, FAKE_TRY_BANG = 32) is undefined
+#      behaviour there, even though it is well-defined on every LP64 host this repo is built and
+#      tested on — so the bug is invisible locally and on Linux/macOS CI alike. This scans every
+#      vendored `.c`/`.h` file for a bare `1UL << IDENT` (or `1UL << N`), in every spelling of a
+#      `long` literal (`1UL`/`1ul`/`1LU`/`1lu`/… unsigned, `1L`/`1l` signed; not `1ULL`/`1LL`, 64 bits
+#      everywhere), resolves IDENT's ordinal from the nearest enclosing `enum { … }` in the same file
+#      (explicit `= N` members reset the count), and fails on any unsigned shift >= 32 or signed shift
+#      >= 31 (a signed 32-bit `1L << 31` overflows into the sign bit, undefined in C); a shift whose
+#      operand cannot be resolved statically fails loudly too (H's "unclassified fails loudly"
+#      convention), rather than passing while unproven. A re-vendor that reintroduces this shape in
+#      any grammar — not just swift — turns this arm red the moment it lands, before it ever reaches
+#      a Windows build.
 #
 # Usage:
 #   test/vendorpatchcheck.sh
@@ -467,7 +485,7 @@ fi
 "$BIN" "$TMP/deepinterp" --no-cache > "$TMP/deepinterp.xml" 2> "$TMP/deepinterp.err"; deepRc=$?
 if [ "$deepRc" -eq 0 ]; then
     if xmllint --noout "$TMP/deepinterp.xml" 2>/dev/null; then
-        ok "J: the default map over 700 nested string-opens exits 0 and is well-formed (ingest's prescan refuses the file first; the --match run below is what reaches the scanner)"
+        ok "J: the default map over 700 nested string-opens exits 0 and is well-formed (ingest's prescan refuses the file first; the raw-scanner harness below is what reaches the scanner)"
     else
         no "J: deep-interpolation parse ran but produced malformed output"
     fi
@@ -476,11 +494,18 @@ else
     head -3 "$TMP/deepinterp.err" | sed 's/^/        /'
 fi
 
-# The RUNTIME half. The default map never reaches this scanner path — ingest's prescan refuses the file first — but
-# --match's structural-query pass parses every file of a grammar the query compiles against, with no nesting guard,
-# so it hands the scanner the 600-deep file directly. Hits INSIDE Deep.kt are the proof that the parse really ran
-# there, which is what makes exit 0 the patch's doing rather than the prescan's (the first Kotlin binary died on
-# exactly this command at rc=134). Under the asan flavour it is also the sanitizer tripwire for the refused push.
+# The RUNTIME half. #157 closed the loophole this arm used to exercise: --match's structural-query pass used to
+# parse every file of a grammar the query compiled against with NO nesting guard, handing the scanner a 600-deep
+# file directly — that was the bug #157 fixed (ripwire's own CLI now refuses this file at every entry point, ingest
+# AND --match/--pattern alike, via IngestResult::nestRefusedFile — see ingest_astquery.h). So $BIN can no longer
+# reach this scanner path at all, by any verb, and this arm's own job — proving kotlin/001 (the scanner refuses the
+# push instead of aborting) independently of ripwire's prescan — needs a caller that has no prescan to bypass:
+# a standalone harness linking the vendored kotlin grammar (parser.c + scanner.c) straight to a tree-sitter core
+# build, calling tree_sitter_kotlin() and ts_parser_parse_string() with nothing else in front. Same $CC detection
+# as arm K's harness below (this arm runs first, so it cannot reuse arm K's $kcc). rc=134 (SIGABRT) is the bug;
+# rc=0 is the patch holding. The harness is built with plain -O1 and no sanitizer flags, in every flavour: it
+# proves the refusal by exit status only, so since #157 took $BIN off this scanner path the asan flavour no
+# longer runs this scanner under a sanitizer (CodeRabbit on #331).
 KTDEEP="$TMP/ktdeep"; mkdir -p "$KTDEEP"
 {
     printf 'package deep\n\nfun deepFn(): Int = 1\n\nval deep = '
@@ -490,16 +515,73 @@ KTDEEP="$TMP/ktdeep"; mkdir -p "$KTDEEP"
     printf '\n'
 } > "$KTDEEP/Deep.kt"
 ktOpeners="$( grep -o '"a\${' "$KTDEEP/Deep.kt" | wc -l | tr -d ' ' )"
-if [ "$ktOpeners" = 599 ]; then
-    "$BIN" "$KTDEEP" --no-cache '--match=(string_literal) @s' > "$TMP/ktdeep.xml" 2> "$TMP/ktdeep.err"; ktRc=$?
-    ktHits="$( grep -o '<m p="Deep.kt:[0-9]*"' "$TMP/ktdeep.xml" | wc -l | tr -d ' ' )"
-    if [ "$ktRc" -eq 0 ] && [ "$ktHits" -gt 0 ]; then
-        ok "J: --match parses the 600-deep Deep.kt directly and exits 0 ($ktHits string_literal hits inside it) — the scanner refused the push instead of aborting"
-    else
-        no "J: --match over a 600-deep string template exited $ktRc with $ktHits hits inside Deep.kt (134 = the scanner's abort(); 0 hits = the parse never ran, so exit 0 would prove nothing): $( head -2 "$TMP/ktdeep.err" )"
-    fi
-else
+if [ "$ktOpeners" != 599 ]; then
     no "J: presence — the generated Deep.kt has $ktOpeners string openers, not 599 (600 open strings) — the runtime arm would assert on the wrong input"
+else
+    JDIR="$TMP/ktharness"; mkdir -p "$JDIR"
+    KTSRC="$DEPS_DIR/kotlin/src"
+    JCORE="$DEPS_DIR/tree_sitter/lib"
+    jcc=""
+    for jcand in "${CC:-}" clang cc gcc; do
+        if [ -n "$jcand" ] && command -v "$jcand" >/dev/null 2>&1; then
+            jcc="$jcand"
+            break
+        fi
+    done
+    cat > "$JDIR/probe.c" <<'CEOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include "tree_sitter/api.h"
+
+const TSLanguage *tree_sitter_kotlin(void);
+
+int main(int argc, char **argv) {
+    static char buf[1 << 20];
+    FILE *f = argc == 2 ? fopen(argv[1], "rb") : NULL;
+    if (!f) {
+        return 2;
+    }
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    if (n == sizeof buf) {
+        return 4;
+    }
+    TSParser *parser = ts_parser_new();
+    if (!ts_parser_set_language(parser, tree_sitter_kotlin())) {
+        return 3;
+    }
+    TSTree *tree = ts_parser_parse_string(parser, NULL, buf, (uint32_t)n);
+    char *sexp = ts_node_string(ts_tree_root_node(tree));
+    printf("%s\n", sexp);
+    free(sexp);
+    ts_tree_delete(tree);
+    ts_parser_delete(parser);
+    return 0;
+}
+CEOF
+    if [ -z "$jcc" ]; then
+        skip "J: no C compiler found (checked \$CC, clang, cc, gcc) — the raw-scanner runtime harness cannot be built"
+    else
+        jbuilt=1
+        "$jcc" -O1 -c "$JCORE/src/lib.c"   -I "$JCORE/include" -I "$JCORE/src" -o "$JDIR/core.o"    2> "$JDIR/build.log" || jbuilt=0
+        "$jcc" -O1 -c "$KTSRC/parser.c"    -I "$JCORE/include" -I "$KTSRC"     -o "$JDIR/parser.o"  2>>"$JDIR/build.log" || jbuilt=0
+        "$jcc" -O1 -c "$KTSRC/scanner.c"   -I "$JCORE/include" -I "$KTSRC"     -o "$JDIR/scanner.o" 2>>"$JDIR/build.log" || jbuilt=0
+        "$jcc" -O1 -c "$JDIR/probe.c"      -I "$JCORE/include"                -o "$JDIR/probe.o"    2>>"$JDIR/build.log" || jbuilt=0
+        if [ "$jbuilt" = 1 ]; then
+            "$jcc" "$JDIR/probe.o" "$JDIR/core.o" "$JDIR/parser.o" "$JDIR/scanner.o" -o "$JDIR/probe" 2>>"$JDIR/build.log" || jbuilt=0
+        fi
+        if [ "$jbuilt" != 1 ]; then
+            no "J: $jcc could not build the raw kotlin-scanner harness — $( grep -m1 -iE 'error|undefined' "$JDIR/build.log" )"
+        else
+            ok "J: presence — the vendored kotlin grammar (parser.c + scanner.c) built standalone against one tree-sitter core with $jcc, no ripwire CLI involved"
+            ( "$JDIR/probe" "$KTDEEP/Deep.kt" > "$JDIR/probe.out" 2>"$JDIR/probe.err" ); jrc=$?
+            if [ "$jrc" -eq 0 ] && [ -s "$JDIR/probe.out" ]; then
+                ok "J: the raw scanner parses the 600-deep Deep.kt directly and exits 0 — the scanner refused the push instead of aborting"
+            else
+                no "J: the raw scanner over a 600-deep string template exited $jrc (134 = the scanner's abort(); kotlin/001-stack-push-no-abort.patch would be reverted or ineffective): $( head -2 "$JDIR/probe.err" )"
+            fi
+        fi
+    fi
 fi
 
 # kotlin/002: an escaped `$` immediately before a triple-quoted string's closing delimiter used to
@@ -763,6 +845,175 @@ elif command -v leaks >/dev/null 2>&1 && [ "$( uname -s )" = "Darwin" ] && ! LC_
     fi
 else
     skip "L: tree_sitter/001 — no leak detector for this binary here (LeakSanitizer needs a Linux sanitizer build; leaks(1) needs macOS and a plain build)"
+fi
+
+# ── M: 1UL << shift-width family audit (static, no $BIN involved) ─────────────────────────────────
+# The audit is written once and run twice: first on a synthetic tree whose verdicts are known (M0, the arm's own
+# red-first control), then on third_party/deps/. A clean result means every *.c/*.h was READ and every `1UL <<`
+# operand was either proven < 32 or reported: the whole operand is parsed across lines, a numeric operand gets the
+# same >= 32 test as an enumerator, an operand that continues past its first token (`31 + 1`, `(n)`, `a[i]`) is
+# UNRESOLVED rather than read as its first token, and after an enumerator whose initializer is not a literal the
+# implicit members that follow stay unresolved until a literal initializer resets the count.
+cat > "$TMP/shiftwidth.py" <<'PYEOF'
+import re, sys, pathlib
+
+deps_dir = pathlib.Path(sys.argv[1])
+files = sorted(deps_dir.rglob("*.c")) + sorted(deps_dir.rglob("*.h"))
+if not files:
+    sys.exit(f"no *.c or *.h under {deps_dir}: the audit would read nothing")
+
+# every spelling of a `long` 1: unsigned (u and l in either order and case) or signed; `1ULL`/`1LL` fail the \b
+shift_re = re.compile(r'\b1(?P<suffix>[uU][lL]|[lL][uU]?)\b\s*<<')
+ident_re = re.compile(r'[A-Za-z_]\w*')
+num_re = re.compile(r'(0[xX][0-9A-Fa-f]+|[0-9]+)[uUlL]*(?![\w.])')
+enum_block_re = re.compile(r'\benum\b[^{;]*\{([^}]*)\}', re.S)
+
+def strip_comments(text):
+    # Blanks out // and /* */ comments while preserving every newline, so line numbers in the
+    # stripped text still match the original file, and no identifier or digit inside a comment
+    # (including this audit's own explanatory comments in a patched vendored file) can be mistaken
+    # for a real shift expression. Not string-literal aware — acceptable here: these are C scanner
+    # sources, and a `//`/`/*` inside a string literal on a `1UL <<` line is not a shape this
+    # vendored code uses.
+    out = []
+    i, n = 0, len(text)
+    line_comment = block_comment = False
+    while i < n:
+        c = text[i]
+        if line_comment:
+            out.append('\n' if c == '\n' else ' ')
+            line_comment = c != '\n'
+            i += 1
+        elif block_comment:
+            if text[i:i + 2] == '*/':
+                out.append('  '); i += 2; block_comment = False
+            else:
+                out.append('\n' if c == '\n' else ' '); i += 1
+        elif text[i:i + 2] == '//':
+            out.append('  '); i += 2; line_comment = True
+        elif text[i:i + 2] == '/*':
+            out.append('  '); i += 2; block_comment = True
+        else:
+            out.append(c); i += 1
+    return ''.join(out)
+
+def c_int(tok):
+    # a C integer literal (hex, octal, decimal; any u/l suffix): its value, or None when it is not one
+    m = re.fullmatch(r'(0[xX][0-9A-Fa-f]+|0[0-7]*|[1-9][0-9]*)[uUlL]*', tok.strip())
+    if not m:
+        return None
+    d = m.group(1)
+    return int(d, 16) if d[:2] in ('0x', '0X') else int(d, 8) if d.startswith('0') else int(d)
+
+def operand(text, i):
+    # The shift operand starting at text[i]: (token, None) when it is ONE identifier or number that ends the
+    # operand, else (None, why). `<<` binds looser than + - * / % and tighter than everything after it, so the
+    # token ends the operand exactly when the next code character is none of those (nor a call, index, member
+    # access or a further shift).
+    n = len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    m = num_re.match(text, i) or ident_re.match(text, i)
+    if not m:
+        return None, "the operand is not a single identifier or number (%r)" % text[i:i + 12].split('\n')[0]
+    j = m.end()
+    while j < n and text[j].isspace():
+        j += 1
+    nxt = text[j:j + 2]
+    if j < n and (text[j] in '+-*/%([.' or nxt in ('<<', '>>') or text[j].isalnum() or text[j] == '_'):
+        return None, "the operand continues past %s (%r)" % (m.group(0), text[i:j + 8].replace('\n', ' '))
+    return m.group(0), None
+
+for f in files:
+    rel = f.relative_to(deps_dir.parent).as_posix()
+    try:
+        text = strip_comments(f.read_bytes().decode("utf-8", errors="replace"))
+    except OSError as e:
+        sys.exit(f"cannot read {rel}: {e}: a file the audit could not read is not a clean file")
+    # Ordinal map for every identifier declared in any enum { … } block in this file. A later
+    # block overwrites an earlier one on a name collision, same as C's last-definition-wins scope.
+    ordmap = {}
+    for m in enum_block_re.finditer(text):
+        ordv = 0   # None once an initializer could not be read: the implicit members after it are unknown too
+        for part in m.group(1).split(','):
+            part = part.strip()
+            if not part:
+                continue
+            if '=' in part:
+                name, val = (p.strip() for p in part.split('=', 1))
+                ordv = c_int(val)
+            else:
+                name = part
+            if not re.match(r'^[A-Za-z_]\w*$', name):
+                continue
+            ordmap[name] = ordv
+            ordv = None if ordv is None else ordv + 1
+    for sm in shift_re.finditer(text):
+        lineno = text.count('\n', 0, sm.start()) + 1
+        lit = '1' + sm.group('suffix')
+        # 32-bit long on LLP64: an unsigned 1 may shift by up to 31; a signed 1 by up to 30 (31 reaches the sign bit)
+        limit = 32 if 'u' in lit.lower() else 31
+        tok, why = operand(text, sm.end())
+        if tok is None:
+            print(f"UNRESOLVED\t{rel}\t{lineno}\t-\t{why}\t{lit}\t{limit}")
+            continue
+        val = c_int(tok) if tok[0].isdigit() else ordmap.get(tok)
+        if val is None:
+            print(f"UNRESOLVED\t{rel}\t{lineno}\t{tok}\tcould not resolve {tok}'s ordinal statically (unknown, or after a non-literal enumerator initializer)\t{lit}\t{limit}")
+        elif val >= limit:
+            print(f"BAD\t{rel}\t{lineno}\t{tok}\t{val}\t{lit}\t{limit}")
+        else:
+            print(f"OK\t{rel}\t{lineno}\t{tok}\t{val}\t{lit}\t{limit}")
+PYEOF
+# M0 — the audit's own control. Each shape below is one the previous per-line, first-token audit passed (1UL << 32,
+# an operand continued by `+ 1` or onto the next line, a parenthesised operand, an implicit enumerator after a
+# non-literal initializer); each must now be BAD or UNRESOLVED, while the plainly safe shifts stay OK. g() is the
+# other `long` spellings: unsigned ones (`1ul`, `1LU`, `1lu`, `1Ul`) are held to < 32 and the signed `1L`/`1l` to < 31,
+# while `1ULL`/`1LL` (64 bits on every model) are not shift sites at all.
+M0="$TMP/shiftwidth-m0/deps"; mkdir -p "$M0/x"
+cat > "$M0/x/s.c" <<'CEOF'
+enum Tok { A = 0, B = 1 << 5, C, D = 3, E };
+unsigned long f( int n ) {
+    return 1UL << 32 | 1UL << 31 + 1 | 1UL <<
+        40 | 1UL << ( 2 ) | 1UL << C | 1UL << E | 1UL << 0x1f | 1UL << 5, 0;
+}
+long g( void ) {
+    return 1ul << 33 | 1LU << 34 | 1L << 31 | 1l << 30 | 1lu << 31 | 1Ul << 3 | 1ULL << 40 | 1LL << 40;
+}
+CEOF
+m0got="$( python3 "$TMP/shiftwidth.py" "$M0" 2>&1 | cut -f1,3,4 | tr '\t\n' ': ' )"
+m0want='BAD:3:32 UNRESOLVED:3:- BAD:3:40 UNRESOLVED:4:- UNRESOLVED:4:C OK:4:E OK:4:0x1f OK:4:5 BAD:7:33 BAD:7:34 BAD:7:31 OK:7:30 OK:7:31 OK:7:3 '
+if [ "$m0got" = "$m0want" ]; then
+    ok "M0: the shift-width audit rejects the 5 shapes a first-token, per-line audit passed (numeric 32, \`31 + 1\`, 40 on the next line, \`( 2 )\`, an enumerator after a non-literal initializer) and passes 3 safe shifts; in the other long spellings it rejects \`1ul << 33\`, \`1LU << 34\` and signed \`1L << 31\`, passes \`1l << 30\`, \`1lu << 31\` and \`1Ul << 3\`, and skips \`1ULL\`/\`1LL\`"
+else
+    no "M0: the shift-width audit's own control: got [$m0got], want [$m0want]"
+fi
+m0empty="$TMP/shiftwidth-m0/empty"; mkdir -p "$m0empty"
+if python3 "$TMP/shiftwidth.py" "$m0empty" >/dev/null 2>&1; then
+    no "M0: the audit passed a tree with no *.c/*.h (it read nothing)"
+else
+    ok "M0: the audit refuses a tree with no *.c/*.h rather than report zero sites"
+fi
+python3 "$TMP/shiftwidth.py" "$DEPS_DIR" > "$TMP/shiftwidth.out" 2>"$TMP/shiftwidth.err"; mrc=$?
+if [ "$mrc" != 0 ] || [ -s "$TMP/shiftwidth.err" ]; then
+    no "M: the shift-width audit did not complete (rc=$mrc): $( head -3 "$TMP/shiftwidth.err" | tr '\n' ' ' )"
+else
+    mBad=0; mUnresolved=0
+    while IFS=$'\t' read -r kind rel lineno tok val lit limit; do
+        case "$kind" in
+            BAD)
+                mBad=$(( mBad + 1 ))
+                no "M: $rel:$lineno — \`$lit << $tok\` shifts by $val (>= $limit): undefined behaviour on LLP64 (long is 32 bits there); use a 64-bit literal (1ULL / 1LL)"
+                ;;
+            UNRESOLVED)
+                mUnresolved=$(( mUnresolved + 1 ))
+                no "M: $rel:$lineno — \`$lit << …\`: $val; cannot prove this shift is in range"
+                ;;
+        esac
+    done < "$TMP/shiftwidth.out"
+    if [ "$mBad" = 0 ] && [ "$mUnresolved" = 0 ]; then
+        ok "M: no \`long\` 1 shifted past its 32-bit width (unsigned >= 32, signed >= 31) or by an operand the audit cannot establish under third_party/deps/ ($( wc -l < "$TMP/shiftwidth.out" | tr -d ' ' ) bare-long-1 shift site(s) checked)"
+    fi
 fi
 
 # ── verdict ─────────────────────────────────────────────────────────────────────────────────────

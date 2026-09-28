@@ -21,6 +21,8 @@
 //      the st_mode a stat reports.
 //   6. Time, wait-status and socket-timeout conversions, and the socket-descriptor range.
 //   7. The shell choice: which bash may run a command (never a WSL launcher, never a relative PATH entry).
+//      And the program search os::which does: PATH in order, PATHEXT, absolute entries only.
+//   8. The PATH remedy --doctor prints when no copy of this program is on PATH, in PowerShell's spelling.
 //
 // Nothing here reads errno, the environment or the file system; every input is a parameter. Every function is noexcept
 // (owner directive 2026-09-16: RAII and return values, no exception handling): the ones that build a std::string can
@@ -631,6 +633,41 @@ inline std::string rebaseMsysTmp( std::string_view path, std::string_view native
     return out;
 }
 
+// The dispatch every os_win32.cpp syscall body makes before it touches Win32: which rebase (if any) applies to
+// `path`. Extracted from NativePath::rebase() (os_win32.cpp) so a caller OUTSIDE the os:: layer — one that hands a
+// path to something Win32-shaped that is not os:: itself, such as std::filesystem or a popen'd shell command — can
+// ask the same question without a Win32 call, and so this routing is exercised by test/verify_os_win32_logic.cpp
+// instead of only by whichever Windows CI leg happens to touch it. Pure prefix routing: "" (not "/tmp" or
+// "/dev/null") is returned unchanged by both branches above, and reaches here as-is; NativePath treats an empty
+// result as "no rebase, use `path` verbatim" and os::rebased_path does the same.
+//
+// #326: this is the seam --doctor's cache-dir check was missing — its writability probe called bare std::fopen and
+// its blob scan called std::filesystem::directory_iterator directly on cacheDirLadder()'s un-rebased "/tmp/<cache-dir>-
+// <uid>" spelling, neither of which passes through NativePath, so on Windows both silently measured a directory
+// (the CURRENT DRIVE's "\tmp\<cache-dir>-<uid>") that the cache never actually uses (rw::os::mkdir DID rebase, via this
+// same routing, so the real cache directory the tool writes to was elsewhere and always healthy). The cache-eviction
+// sweep (quality.h evictOldCacheFamily) and the shard layout (resolveCacheBlobPath) read that same spelling the same
+// way, so cacheDirLadder() now resolves it ONCE through rw::os::rebased_path, at the source, for every consumer. That
+// is only safe because this dispatch is idempotent: an answer it already gave starts with a drive letter (or the
+// "|unusable|" sentinel), never '/', so a second pass — every os:: call NativePath makes on the resolved path — is a
+// no-op. test/verify_os_win32_logic.cpp pins that property.
+inline std::string rebasedProgramPath( std::string_view path, std::string_view nativeTmp ) noexcept
+{
+    if( path.empty() || path.front() != '/' )
+    {
+        return {};
+    }
+    if( path.substr( 0, 4 ) == "/tmp" )
+    {
+        return rebaseMsysTmp( path, nativeTmp );   // may itself answer {} — see that function's own boundary checks
+    }
+    if( path.substr( 0, 9 ) == "/dev/null" )
+    {
+        return rebaseDevNull( path );              // may itself answer {} — see that function's own boundary checks
+    }
+    return {};
+}
+
 // The extended-length spelling of an ABSOLUTE native path, for the -W calls that must work past MAX_PATH whatever the
 // machine's LongPathsEnabled setting: "C:\\x" → "\\\\?\\C:\\x", "\\\\server\\share" → "\\\\?\\UNC\\server\\share", '/' → '\\'. A path that already
 // carries the prefix is returned as it is; a relative or drive-relative path is returned empty — "\\\\?\\" turns off
@@ -1095,5 +1132,118 @@ constexpr bool extensionInList( std::string_view path, std::string_view pathext 
     }
     return false;
 }
+
+// searchProgramPath: the program Windows itself starts for `command` (os::which on Windows), as pure logic over the PATH
+// and PATHEXT strings. The one filesystem fact it needs, "is this a file and not a directory?", comes from `isFile`, so
+// the search runs and is tested on every platform. A `command` holding a separator or a drive colon is resolved alone.
+// Otherwise PATH is read in order. An entry that is empty or not absolute is never searched: ".", "bin", and Git Bash's
+// "/c/..." spelling, which Win32 cannot open. A name without an extension is tried with each PATHEXT entry, in PATHEXT's
+// order, one directory at a time; a name with an extension is used only if PATHEXT lists it. An empty `pathext` means
+// Windows' own default. The answer is in the program's spelling: '/' separators, an upper-case drive, and the extension
+// as PATHEXT spells it ("C:/tools/bin/tool.EXE"; the file system ignores case). "" when nothing resolves.
+// #334: --doctor's binary-path row used Git Bash's `which` instead. It answered from another shell's PATH, in a "/c/..."
+// spelling the C runtime could not open, so a byte-identical copy came out STALE.
+// One candidate `base` (a directory joined with the command, or the command itself): with an extension, used as given
+// if PATHEXT lists it; without one, the first `base` + PATHEXT entry that is a file. "" when neither.
+template<class IsFile>
+std::string programCandidate( std::string base, std::string_view extensions, const IsFile& isFile ) noexcept
+{
+    normalizePathArgInPlace( base.data() );
+    if( hasExtension( base ) )
+    {
+        return extensionInList( base, extensions ) && isFile( base ) ? base : std::string();
+    }
+    for( std::size_t at = 0; at <= extensions.size(); )
+    {
+        const std::string_view extension = nextPathListEntry( extensions, at );
+        if( !extension.empty() && isFile( base + std::string( extension ) ) )
+        {
+            return base + std::string( extension );
+        }
+    }
+    return {};
+}
+
+template<class IsFile>
+std::string searchProgramPath( std::string_view command, std::string_view pathList, std::string_view pathext, const IsFile& isFile ) noexcept
+{
+    if( command.empty() || command.find( '\0' ) != std::string_view::npos )
+    {
+        return {};
+    }
+    const std::string_view extensions = pathext.empty() ? std::string_view( ".COM;.EXE;.BAT;.CMD" ) : pathext;
+    if( command.find_first_of( "/\\:" ) != std::string_view::npos )
+    {
+        return programCandidate( std::string( command ), extensions, isFile );
+    }
+    for( std::size_t at = 0; at <= pathList.size(); )
+    {
+        std::string_view directory = nextPathListEntry( pathList, at );
+        if( directory.empty() || !isAbsoluteNativePath( directory ) )
+        {
+            continue;
+        }
+        while( directory.size() > 3 && ( directory.back() == '/' || directory.back() == '\\' ) )
+        {
+            directory.remove_suffix( 1 );
+        }
+        std::string found = programCandidate( std::string( directory ) + "/" + std::string( command ), extensions, isFile );
+        if( !found.empty() )
+        {
+            return found;
+        }
+    }
+    return {};
+}
+
+// ── 8. The PATH remedy, in PowerShell's spelling ──────────────────────────────────────────────────────────────────
+// powerShellSingleQuote: `s` as ONE PowerShell single-quoted string literal, in which nothing expands (no `$`, no
+// backtick escape, no `$(...)`). PowerShell's grammar is not POSIX's: an embedded quote is escaped by doubling it
+// (`''`, not `'\''`), and its tokenizer accepts FIVE characters as a single quote — the ASCII `'` and the typographic
+// U+2018..U+201B (‘ ’ ‚ ‛; UTF-8 E2 80 98..9B), any of which closes the literal. A directory named with a
+// typographic apostrophe ("O’Brien") would otherwise end the literal early and let the rest of the name run as
+// code. So each of the five is doubled, itself twice, which the tokenizer reads back as that one character. `s` is
+// UTF-8; any other byte is copied through unchanged.
+inline std::string powerShellSingleQuote( std::string_view s ) noexcept
+{
+    std::string out = "'";
+    for( std::size_t i = 0; i < s.size(); ++i )
+    {
+        const bool typographic = i + 2 < s.size() && static_cast<unsigned char>( s[i] ) == 0xE2
+                              && static_cast<unsigned char>( s[i + 1] ) == 0x80 && static_cast<unsigned char>( s[i + 2] ) >= 0x98
+                              && static_cast<unsigned char>( s[i + 2] ) <= 0x9B;
+        if( typographic )
+        {
+            out.append( s.substr( i, 3 ) ).append( s.substr( i, 3 ) );
+            i += 2;
+        }
+        else if( s[i] == '\'' )
+        {
+            out += "''";
+        }
+        else
+        {
+            out += s[i];
+        }
+    }
+    out += '\'';
+    return out;
+}
+
+// --doctor's binary-path row says how to put this binary's directory on PATH when no copy of this program resolves from it. The POSIX
+// remedy is a shell `export PATH=` line; both Windows testers on #334 read that line in PowerShell, where it does
+// nothing. Here it is PowerShell's own assignment, with the directory in native '\' separators (a program path is '/'-
+// separated), for this window, and the pointer to the user Path that new windows read (README's Windows install sets it).
+// The directory (plus the trailing ';') is one PowerShell single-quoted literal (powerShellSingleQuote, above);
+// `$env:Path` is appended outside the quotes so it still expands to the existing Path.
+// The hint is the assignment ONLY, so pasting all of it runs (CodeRabbit 4109273959, second comment); the guidance that
+// used to trail it is kPowerShellPathPrependScope, which the caller prints before the command.
+inline std::string powerShellPathPrependHint( std::string_view programDir ) noexcept
+{
+    std::string dir( programDir );
+    std::replace( dir.begin(), dir.end(), '/', '\\' );
+    return "$env:Path = " + powerShellSingleQuote( dir + ";" ) + " + $env:Path";
+}
+inline constexpr std::string_view kPowerShellPathPrependScope = "in PowerShell, for this window; add the directory to your user Path for new ones";
 
 }   // namespace rw::oswin

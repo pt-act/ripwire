@@ -303,9 +303,18 @@ meter_dest()
 #      than part of it, so the fallback re-asks for the toplevel alone — otherwise an old git would
 #      turn every call into "not a repo" and silently stop the tag AND the nudge gate together. The
 #      fallback costs a second fork only where the first form failed: outside a repo, or on an old git.
+#
+#      It is the first git call on both paths (PreToolUse and --session-start), so it also clears git's
+#      repository-selection variables inherited from the caller, for the rest of the hook, as the two route
+#      hooks do (git's own list, plus GIT_DIR/GIT_WORK_TREE if git cannot print it). The hook answers for the
+#      JSON cwd: with GIT_DIR exported, `git -C "$dir"` answers for THAT repository, `--show-toplevel`
+#      prints a non-git cwd as its own top level, and `--is-inside-work-tree` prints `true` there, so a
+#      nudge, the primer and the meter's repo tag all went to a directory that is not a repository.
 meter_isrepo=0
 meter_set_repo()
 {
+    # shellcheck disable=SC2046 # word splitting is intended: one variable name per word
+    unset $( git rev-parse --local-env-vars 2>/dev/null ) GIT_DIR GIT_WORK_TREE
     meter_repo=""
     meter_tag=""
     meter_isrepo=0
@@ -566,6 +575,15 @@ meter_arg1=""
 # control-operator branch, so the digit behind it is read as a command word. That can only ever cost a
 # MISSED call, in a line where `ripwire` sits in exactly that position, and never a false one.
 #
+# COST (issue #327). Each character read rebuilds the rest of the line (`${rw_line#?}`, and the suffix match
+# around it), so the scan grows with the cube of the line's length: 20 s for a 4,000-character line under macOS
+# bash 3.2, in front of the tool call it only counts. Two guards come first. A line that does not contain the
+# word as written holds no call, and that check ends the scan for nearly every command. It reads the raw text,
+# before quote removal, so a command word the shell assembles from quoted or escaped fragments (`'rip''wire'`,
+# `rip\wire`, `"rip""wire"`) reads as no call: a MISSED call, never a false one. A line longer than 1,024
+# characters is not scanned and reads as no call — a MISSED call, the same direction as the limit above; 1,024
+# costs under half a second at worst. test/routehookcheck.sh O10 holds the cost, O9 pins the assembled words.
+#
 # POSIX sh only, no bashisms: routehookcheck.sh extracts this block and runs it under `sh`.
 rw_cmd_word()
 {
@@ -599,6 +617,8 @@ rw_cmd_word()
 
 rw_is_ripwire_call()
 {
+    case "$1" in *ripwire*) ;; *) return 1 ;; esac
+    [ "${#1}" -le 1024 ] || return 1
     rw_nl='
 '
     rw_tab="$( printf '\t' )"
@@ -1149,7 +1169,12 @@ then
     [ "$meter_arm" = "control" ] && exit 0
 
     command -v ripwire >/dev/null 2>&1 || exit 0
-    git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
+    # The answer must be `true`, not only exit 0: a bare repository, or a cwd inside a `.git` directory,
+    # prints `false` with status 0 (the #327 shape fixed in the two route hooks, 1cd00d4d) — this primer
+    # would otherwise fire there too and walk git's own metadata for `ripwire wrap`.
+    # git's inherited repository-selection variables were already cleared by meter_set_repo above.
+    insideWorkTree="$( git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null )" || exit 0
+    [ "$insideWorkTree" = true ] || exit 0
 
     marker="${TMPDIR:-/tmp}/ripwire-nudge.${session}.session-start"
     [ -e "$marker" ] && exit 0

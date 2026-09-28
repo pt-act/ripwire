@@ -525,9 +525,9 @@ add(S7, f"{BIN} . --rank-by=churn --top-k=5", "Rank by git change-frequency prio
 # fmt_block's display cut, so the reader never reaches the scoped one, its next= or the stub; too narrow and
 # DIR has --limit or fewer touched files, the page does not cut, and the block prints capped="0" with no
 # paging half and no next= — the case showing none of what it exists to show. A THIRD constraint squeezes
-# from the side: every --exclude lengthens the continuation the scoped page replays, and at
-# kNextAttrMaxBytes (120 B) that next= is DROPPED rather than truncated, so a narrower corpus buys global
-# rows and spends next= bytes.
+# from the side: every --exclude lengthens the continuation the scoped page replays, and (as of
+# 2026-09-25) next= is now emitted in FULL whatever its length — a narrower corpus keeps the demonstrated
+# next= short and readable, not the difference between showing one and showing nothing.
 #
 # Two hand-measured Ns have now rotted, so the literal is gone: HEAD~7 read of="5" with a 13-row global block
 # on 2026-09-12 and a 40-row one (everything cut) on 2026-09-14, because two merges of main landed in the
@@ -578,7 +578,7 @@ def inCaseUnshown( n ):
         if 'capped="1"' not in scoped.group( 0 ):
             gone.append( f'capped="1" (the window is too narrow for --limit={_IN_LIMIT} to cut)' )
         if "next=" not in scoped.group( 0 ):
-            gone.append( "the scoped page's next= (dropped at kNextAttrMaxBytes: the flag set is too long)" )
+            gone.append( "the scoped page's next= (unexpectedly absent — next= is no longer dropped for length, as of 2026-09-25)" )
     if "<symbols stubbed=" not in shown:
         gone.append( "the <symbols stubbed=> stub (past the display cut)" )
     return gone
@@ -663,7 +663,7 @@ add(S2B, f"{BIN} . --run-timeout=5", "--run-timeout alone is refused loudly (it 
 
 S4B = "assess quality — the wider lens family"
 add(S4B, f"{BIN} . --quality-panel", "THE single wide-angle quality read: six families in one pass, an eligible/ranked shortlist rather than a firehose.", timeout=600)
-add(S4B, f"{BIN} . --readability --limit=8", "Per-function size ranking, largest Halstead volume/token entropy/lines first — a size proxy, not a readability order (withdrawn, docs/EVALS.md §8) — a RANKING lens, not a grade.")
+add(S4B, f"{BIN} . --biggest-first --limit=8", "Per-function size ranking, largest Halstead volume/token entropy/lines first — a size proxy, not a readability order (withdrawn, docs/EVALS.md §8) — a RANKING lens, not a grade.")
 add(S4B, f"{BIN} . --comment-coherence --limit=8", "Functions WITH a doc comment, most name-restating first: c_coeff (high = the comment repeats the name) and cic (Jaccard of comment vs identifier vocabulary), both reported, never collapsed.")
 add(S4B, f"{BIN} . --context-ratio --limit=8", "The local-reasoning lens: to understand this symbol, how much must you know that is NOT in front of you (ent_ratio= edge share, read_ratio= token-weighted).")
 add(S4B, f"{BIN} . --nonlocal-state --limit=8", "Per function, the non-local MUTABLE state it can reach (transitively), most writes first — unsound by construction, and the legend says where.")

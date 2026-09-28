@@ -201,7 +201,7 @@ std::optional<int> runCallHierarchy( const MainDispatch& d )
             rw::emitTo( stdout, "{}{}{}{}{}{}-->{}{}", rw::callHierarchyLegendOpen( wantCallers, chNextIsBare, cfg.columnar ).c_str(),
                          rw::capLegendClause( rw::computePageDisclosure( pw.end - pw.begin, result.size(), pw.end,
                                                                         cfg.pageLimit, cfg.pageOffset, chDiscloseCap ).active ),
-                         rw::declinedCallsLegend( chRows.declinedCalls > 0 ),   // exactly when the root carries declined_calls=
+                         rw::declinedCallsLegendWithGate( chRows.declinedCalls > 0, g.gateDeclinedCalls > 0 ),   // exactly when the root carries declined_calls=
                          rw::unprovenDefsLegend( chRows.unprovenDefs > 0 ),     // H1: likewise, exactly when unproven_defs= is there
                          rw::modScopeLegend( chHasModScope ),                   // #60: likewise, exactly when a t="modscope" row is
                          rw::graphCountDisclosure( g.unindexedFiles > 0 ).c_str(), rw::rootRelPathsLegend( chSingleRoot ),
@@ -505,11 +505,11 @@ inline std::vector<char> usesChosenCallers( const rw::IngestResult& ing, const r
 }
 
 // ONE use-site row: (file, line, role, enclosing canonical id). File scope ⇒ `in` empty.
-struct UseSite { std::uint32_t fileId; std::uint32_t line; rw::RefRole role; std::string in; };
+struct UseSite { std::uint32_t fileId; std::uint32_t line; rw::RefRole role; std::string in; rw::NodeId from; };   // from: the enclosing symbol (kNoNode at file scope) — rankUseSites' weight
 
 // The use-site scan: references whose NAME matches the selector and that carry a real use-site role. Markdown
 // doc-mentions / wikilinks and HAS-A compose edges are NOT name use-sites (excluded). Returns the rows in the
-// deterministic emission order (file path, line, role, enclosing-id) plus `callSitesOfName` — the call-role
+// deterministic base order (tier, file path, line, role, enclosing-id; the --uses emitters then rank it, graph.h rankUseSites) plus `callSitesOfName` — the call-role
 // total BEFORE the §A6b narrowing, which is what the disclosure attribute reports.
 //
 // M12: `rootForId` is fielduses.h's OWN `rootForId` convention (`singleRoot ? root : {}`) — the caller's
@@ -557,7 +557,7 @@ collectUseSites( const rw::IngestResult& ing, const UsesSelector& sel, std::span
         {
             in = canonicalIdForEmit( ing, ing.symbols[ r.fromSymbol ], rootForId );   // M12: root-relative, no leading "./"
         }
-        sites.push_back( { r.fileId, r.line, r.role, std::move( in ) } );
+        sites.push_back( { r.fileId, r.line, r.role, std::move( in ), r.fromSymbol } );
     }
 
     // LB-G (r10 §5): TIER before path, filter.h's shared key — `--uses=bulk_create` was 207 django rows
@@ -615,7 +615,7 @@ std::optional<int> runUses( const MainDispatch& d )
     // all their use-sites. external="1" when SYM has NO in-corpus definition at all. §P10.2/§A6b: SYM also
     // accepts "file:name" and "::" spellings (resolveUsesSelector) — both narrow defs= AND the call-role sites
     // (usesChosenCallers); the other roles stay name-matched, and defs_of_name=/call_sites_of_name= disclose both gaps.
-    // Deterministic: use-sites sorted by (file path, line, role, enclosing-id); every value XML-escaped.
+    // Deterministic: use-sites sorted by tier, then enclosing symbol's callers (desc), then (file path, line, role, enclosing-id); every value XML-escaped.
     if( !cfg.usesSym.empty() )
     {
         const std::string_view sym = cfg.usesSym;
@@ -648,8 +648,9 @@ std::optional<int> runUses( const MainDispatch& d )
         const std::vector<char> isChosenCaller = ( sel.fileQualified || sel.scopeNarrowed ) ? usesChosenCallers( ing, g, defs ) : std::vector<char>{};
 
         // the sorted use-sites, plus the un-narrowed call-role total the disclosure reports.
-        const auto [ sites, callSitesOfName ] = collectUseSites( ing, sel, isChosenCaller,
-                                                                 usSingleRoot ? std::string_view( cfg.roots[0] ) : std::string_view{} );
+        auto [ sites, callSitesOfName ] = collectUseSites( ing, sel, isChosenCaller,
+                                                           usSingleRoot ? std::string_view( cfg.roots[0] ) : std::string_view{} );
+        rw::rankUseSites( ing, g, sites );   // cut-fix C: most-depended-on sites first, so the cap drops the lightest
 
         // §A6b(ii): a file: qualifier naming a file with NO definition of the name is a WRONG SELECTOR — its
         // three siblings all refuse it, and so does this one now.
@@ -673,8 +674,13 @@ std::optional<int> runUses( const MainDispatch& d )
         // §A6b: the qualifier disclosure, built once for both emitters. defs_of_name= is the un-narrowed DEF
         // count; narrowed_roles="call" names which roles the qualifier actually narrowed and call_sites_of_name=
         // is that role's un-narrowed total, so "how much did the qualifier drop" is arithmetic, not a guess.
+        // declined_calls=: a narrowed selector keeps only the call sites that RESOLVE to its defs, so a call the resolver
+        // declined to bind is in no row here although it may mean one of them — counted as --callers counts it. A bare name
+        // lists every same-named call site already, so it carries none.
+        const std::size_t usDeclinedCalls = ( sel.fileQualified || sel.scopeNarrowed ) ? declinedCallsNaming( g, defs ) : 0;
         const std::string selectorAttrs = ( sel.fileQualified || sel.scopeNarrowed )
             ? " defs_of_name=\"" + std::to_string( sel.defsOfName ) + "\" narrowed_roles=\"call\" call_sites_of_name=\"" + std::to_string( callSitesOfName ) + "\""
+              + rw::declinedCallsAttrXml( usDeclinedCalls )
             : std::string{};
 
         std::vector<char> esc;
@@ -698,7 +704,8 @@ std::optional<int> runUses( const MainDispatch& d )
                      "resolution and stay name-matched across every def sharing the name. narrowed_roles= names what narrowed, and "
                      "defs_of_name=/call_sites_of_name= (qualifier only) are the un-narrowed totals. "
                      "{}{}{}-->{}{}", rw::kUsesLegendOpen,
-                     rw::unprovenDefsVerbLegend( rw::UnprovenDefsVerb::Uses, usUnprovenDefs > 0 ).c_str(),   // H1: exactly when the root carries unproven_defs=
+                     ( rw::unprovenDefsVerbLegend( rw::UnprovenDefsVerb::Uses, usUnprovenDefs > 0 )           // H1: exactly when the root carries unproven_defs=
+                       + rw::declinedCallsLegendWithGate( usDeclinedCalls > 0, g.gateDeclinedCalls > 0 ) ).c_str(),                              // exactly when it carries declined_calls=
                      rw::capLegendClause( rw::computePageDisclosure( pageRows, sites.size(), upw.end,
                                                                     cfg.pageLimit, cfg.pageOffset, usDiscloseCap ).active ),
                      rw::graphCountDisclosure( g.unindexedFiles > 0 ).c_str(), rw::rootRelPathsLegend( usSingleRoot ),
@@ -786,8 +793,31 @@ std::optional<int> runUses( const MainDispatch& d )
 // H1's residue: `unprovenDefs` is the count resolveAllByNameQualified dropped for this selector. Its clause
 // (graphlegend.h kUnprovenDefsSafeDeleteLegend) follows the risk= sentence directly, because it is the sentence
 // that says what risk= did NOT read; emitted exactly when the root carries unproven_defs=, nothing otherwise.
-inline void emitSafeDeleteLegend( std::size_t defCount, std::size_t unprovenDefs, std::size_t ambiguousCallers, std::string_view risk, bool singleRoot, bool hasUnindexed, bool hasModScope )
+// The facts the safe-delete legend's conditional clauses key on, beside its four counted inputs — one bundle so a new
+// clause adds a field, not a parameter.
+struct SafeDeleteLegendFlags
 {
+    bool        singleRoot    = false;   // root= is on the root: p= is root-relative
+    bool        hasUnindexed  = false;   // graph_unindexed= rides the floor tail
+    bool        hasModScope   = false;   // a <c n="<file-scope>"> row is on this page
+    std::size_t declinedCalls = 0;       // declined_calls= on the root (graph.h declinedCallsNaming)
+    bool        gateDeclined  = false;   // the builtin-method gate declined a call in this graph
+};
+
+inline void emitSafeDeleteLegend( std::size_t defCount, std::size_t unprovenDefs, std::size_t ambiguousCallers, std::string_view risk,
+                                  const SafeDeleteLegendFlags& flags )
+{
+    const bool        singleRoot    = flags.singleRoot;
+    const bool        hasUnindexed  = flags.hasUnindexed;
+    const bool        hasModScope   = flags.hasModScope;
+    const std::size_t declinedCalls = flags.declinedCalls;
+    // declined_calls=: its definition, and — beside risk=none-found — the sentence that keeps none-found from reading as
+    // a safety verdict about a definition some declined call may have meant (graph.h declinedCallsNaming).
+    std::string declinedClause = rw::declinedCallsLegendWithGate( declinedCalls > 0, flags.gateDeclined );
+    if( declinedCalls > 0 && risk == "none-found" )
+    {
+        declinedClause += "none-found beside declined_calls= is not a safety reading: those calls may reach this definition. ";
+    }
     rw::emitTo( stdout, "<!-- ripwire safe-delete: composes signals the tool already computes into one \"can I delete this?\" READ "
                 "— never a verdict. defs= is resolveAllByNameQualified's match count, exactly as the impact/uses/callers "
                 "verbs already disclose it. callers= is the 1-hop caller count (the callers verb's own walk over defs' "
@@ -825,7 +855,7 @@ inline void emitSafeDeleteLegend( std::size_t defCount, std::size_t unprovenDefs
                       ? "untested-radius: callers or uses exist, and NONE of the transitive blast radius is test-covered. "
                       : "uses-exist: callers or uses exist, and at least part of the radius is test-covered. ",
                 // H1: what risk= did not read, straight after the sentence for the value it qualifies.
-                rw::unprovenDefsVerbLegend( rw::UnprovenDefsVerb::SafeDelete, unprovenDefs > 0 ).c_str(),
+                ( rw::unprovenDefsVerbLegend( rw::UnprovenDefsVerb::SafeDelete, unprovenDefs > 0 ) + declinedClause ).c_str(),
                 rw::modScopeLegend( hasModScope ),   // #60: exactly when a <c n="<file-scope>"> row is on this page
                 rw::graphCountDisclosure( hasUnindexed ).c_str(), rw::rootRelPathsLegend( singleRoot ) );
 }
@@ -997,8 +1027,11 @@ std::optional<int> runSafeDelete( const MainDispatch& d )
     // #60: exactly when an owner is one of the <c> rows this page prints. pageWindow is pure, so recomputing
     // it here (the legend streams BEFORE the rows) cannot disagree with the window the rows below take.
     const PageWindow sdLw = pageWindow( callerIds.size(), effectiveRowCap( cfg.pageLimit, 40 ), cfg.pageOffset );
-    emitSafeDeleteLegend( defs.size(), sdUnprovenDefs, ambiguousCallers, risk, sdSingleRoot, g.unindexedFiles > 0,
-                          anyModuleScopeRow( ing, std::span<const NodeId>( callerIds ).subspan( sdLw.begin, sdLw.end - sdLw.begin ) ) );
+    const std::size_t sdDeclinedCalls = declinedCallsNaming( g, defs );   // declined calls that could have meant a def (as --callers counts them)
+    emitSafeDeleteLegend( defs.size(), sdUnprovenDefs, ambiguousCallers, risk,
+                          SafeDeleteLegendFlags{ sdSingleRoot, g.unindexedFiles > 0,
+                                                 anyModuleScopeRow( ing, std::span<const NodeId>( callerIds ).subspan( sdLw.begin, sdLw.end - sdLw.begin ) ),
+                                                 sdDeclinedCalls, g.gateDeclinedCalls > 0 } );
 
     const Symbol&      lead = ing.symbols[ defs[0] ];   // resolveAllByNameQualified walks ascending id — defs[0] is the
                                                         // lowest, same convention --impact/--uses/--callers's of=/defs=
@@ -1008,11 +1041,12 @@ std::optional<int> runSafeDelete( const MainDispatch& d )
     const std::string  sdRootAttr = sdSingleRoot ? ( " root=\"" + ex( cfg.roots[0] ) + "\"" ) : std::string();
     rw::emitTo( stdout, "<safe-delete sym=\"{}\" t=\"{}\" p=\"{}:{}\" defs=\"{}\" callers=\"{}\" ambiguous_callers=\"{}\" "
                 "impact_reaches=\"{}\" uses=\"{}\" tested_self=\"{}\" radius_tested=\"{}\" radius_untested=\"{}\" "
-                "dead_code_candidate=\"{}\" risk=\"{}\"{}{}{}{}>",
+                "dead_code_candidate=\"{}\" risk=\"{}\"{}{}{}{}{}>",
                 ex( cfg.safeDeleteSym ).c_str(), symTag( lead.kind ), ex( sdPathRel( lead.fileId ) ).c_str(), lead.line,
                 defs.size(), callerIds.size(), ambiguousCallers, reach.size(), sites.size(), testedSelf ? 1 : 0,
                 radiusTested, radiusUntested, deadCodeCandidate ? 1 : 0, risk,
                 rw::unprovenDefsAttrXml( sdUnprovenDefs ).c_str(),   // H1: beside the verdict it qualifies; absent at zero
+                rw::declinedCallsAttrXml( sdDeclinedCalls ).c_str(), // beside risk= too: declined calls that may reach it; absent at zero
                 pageDisclosure( cab, sizeof( cab ), cw.end - cw.begin, callerIds.size(), cw.end, cfg.pageLimit, cfg.pageOffset, true ),
                 rw::graphCountFloorAttrXml( g ).c_str(), sdRootAttr.c_str() );
     for( std::size_t i = cw.begin; i < cw.end; ++i )
@@ -1566,8 +1600,19 @@ std::optional<int> runVerify( const MainDispatch& d )
     };
 
     char              pab[ kPageDisclosureCap ];
-    const auto        pageTailOf = [ & ]( std::size_t shownRows, std::size_t total, std::size_t windowEnd ) -> const char*
-    { return pageDisclosure( pab, sizeof( pab ), shownRows, total, windowEnd, 0, 0, true ); };
+    // 2026-09-24 ruling (cut-fix correctness): the CAP HALF only — shown= capped= — never the paging quintet.
+    // pageDisclosure's M2 rule put total=/has_more=/next_offset= on every capped answer, but --verify is not a
+    // paging verb (honorsPaging() refuses --limit/--offset beside it), so next_offset= advertised a call the CLI
+    // then refused. The evidence rows are a sample behind the verdict, and every row total already rides on the
+    // root under its own name (count= hits= defs= occurrences= — rule 2's "the report's own count attribute"), so
+    // shown= against that total is the whole disclosure. The uncapped answer is byte-identical: it was always
+    // exactly this cap half.
+    const auto        pageTailOf = [ & ]( std::size_t shownRows, std::size_t total, std::size_t /*windowEnd*/ ) -> const char*
+    {
+        ASSUME( shownRows <= total );
+        rw::formatTo( pab, sizeof( pab ), " shown=\"{}\" capped=\"{}\"", shownRows, shownRows < total ? 1 : 0 );
+        return pab;
+    };
 
     // ── calls( A , B ) — does A transitively call B (directed, name-based call graph) ────────────────
     if( claim.shape == verify::ClaimShape::Calls )
@@ -1951,7 +1996,11 @@ std::optional<int> runExternalSurface( const MainDispatch& d )
         // P2.1: --pack-top-n caps the listing; names= is the true total, shown=/capped= the printed slice.
         const std::size_t extShown = extPw.end - extPw.begin;
         const bool        extCut   = extShown < names.size();
-        const std::string extNext  = extCut ? rw::nextAttrXml( "--external-surface --offset=" + std::to_string( extPw.end ) ) : std::string();
+        // cut-fix E: the next page of the SAME listing — the caller's --limit, and the two flags that change its rows
+        // or its window (--include-builtins, --pack-top-n) ride along (rw::pagedNext).
+        const std::string extCall  = std::string( "--external-surface" ) + ( cfg.includeBuiltins ? " --include-builtins" : "" )
+                                   + ( cfg.packTopN > 0 ? " --pack-top-n=" + std::to_string( cfg.packTopN ) : std::string() );
+        const std::string extNext  = extCut ? rw::nextAttrXml( rw::pagedNext( extCall, cfg.pageLimit, extPw.end ) ) : std::string();
         const std::string extBuiltinsAttr = builtinsExcluded > 0 ? " builtins_excluded=\"" + std::to_string( builtinsExcluded ) + "\"" : std::string();
         char              extAb[ kPageDisclosureCap ];
         rw::emitTo( stdout, "<external-surface names=\"{}\"{}{}{}>", names.size(), extBuiltinsAttr.c_str(),
@@ -2213,6 +2262,8 @@ int emitImpactColumnar( const ImpactView& v )
                                  + "\" reaches=\"" + std::to_string( v.reaches ) + "\""
                                  + rw::unprovenDefsAttrXml( v.unprovenDefs )                      // H1: where the XML root carries it
                                  + " importers=\"" + std::to_string( v.imports.files.size() ) + "\""
+                                 + rw::importsUnresolvedAttrXml( v.imports.importsUnresolved )   // #220: the XML root's, absent at 0
+                                 + rw::countAttrXmlOrEmpty( "tsconfig_unread", std::size_t( v.imports.tsconfigUnread ) )
                                  + " radius_tested=\"" + std::to_string( v.radiusTested )       // A6
                                  + "\" radius_untested=\"" + std::to_string( v.radiusUntested ) + "\""
                                  + rw::declinedCallsAttrXml( v.declinedCalls )                    // tier-3 declines into the radius
@@ -2227,7 +2278,10 @@ int emitImpactColumnar( const ImpactView& v )
                                  // could only learn by running the other dialect. Naming it costs 44 bytes
                                  // and turns a silent difference into a stated one. Gate:
                                  // test/mcpattrparitycheck.sh (which also fails if a name here IS emitted).
-                                 + " lens=\"shown_importers,importers_capped\""
+                                 // importers_next= rides the XML root only on a cut tier (cut-fix E), so it is
+                                 // declared here exactly when the other forms carry it.
+                                 + ( v.imports.next.empty() ? " lens=\"shown_importers,importers_capped\""
+                                                            : " lens=\"shown_importers,importers_capped,importers_next\"" )
                                  + rw::renderDisclosure( v.prD, rw::DiscloseAs::XmlAttrs )   // W2-F
                                  + rw::nextAttrXml( rw::nextFlag( "--safe-delete=", v.sym ) );   // P3 (L7): the XML root's next=, same set
     emitColumnarSymbolRows( stdout, v.ing, "impact", attr.c_str(), rows, v.rootPrefix, v.testReach );
@@ -2250,6 +2304,12 @@ int emitImpactJson( const ImpactView& v )
                  rw::unprovenDefsKeyJson( v.unprovenDefs ).c_str() );   // H1: absent at zero, like its XML twin
     rw::emitTo( stdout, ",\"importers\":{},\"shown_importers\":{},\"importers_capped\":{}",
                  v.imports.files.size(), v.imports.shown, v.imports.capped ? "true" : "false" );
+    if( !v.imports.next.empty() )   // cut-fix E: the XML root's importers_next=, present on a cut only
+    {
+        rw::emitTo( stdout, ",\"importers_next\":\"{}\"", jsonStr( v.imports.next ).c_str() );
+    }
+    rw::emitTo( stdout, "{}{}", rw::importsUnresolvedKeyJson( v.imports.importsUnresolved ),   // #220: the XML root's, absent at 0
+                 rw::countFieldOrEmpty( "tsconfig_unread", std::size_t( v.imports.tsconfigUnread ), /*json=*/true ) );
     rw::emitTo( stdout, ",\"radius_tested\":{},\"radius_untested\":{}{}", v.radiusTested, v.radiusUntested,
                  rw::declinedCallsKeyJson( v.declinedCalls ) );   // A6; then the XML root's declined_calls=
     if( v.singleRoot ) { rw::emitTo( stdout, ",\"root\":\"{}\"", jsonStr( v.rootRaw ).c_str() ); }   // R-E
@@ -2347,7 +2407,8 @@ std::optional<int> runImpact( const MainDispatch& d )
         // surfaces cannot drift. The two reaches stay separate all the way to the bytes: a separate count
         // (importers=), a separate truncation pair (shown_importers=/importers_capped=, pageview.h rule 6)
         // and a separate row tag.
-        const rw::ImportTier imports        = rw::impactImportTier( ing, seeds );
+        rw::ImportTier       imports        = rw::impactImportTier( ing, seeds );
+        rw::sizeImportTier( imports, cfg.pageLimit, cfg.impactSym );   // cut-fix C: --limit sizes the tier too (offset= does not move it)
         const auto           importPage     = std::span<const std::uint32_t>( imports.files ).first( imports.shown );
         const auto           importLazyPage = std::span<const char>( imports.lazy ).first( imports.shown );
 
@@ -2367,12 +2428,13 @@ std::optional<int> runImpact( const MainDispatch& d )
             // #60: exactly when a module-scope owner is one of the rows this answer prints — the PAGE, which
             // is what `anyModuleScopeRow`'s own contract asks for ("a page of rows, never the corpus").
             const bool imHasModScope = anyModuleScopeRow( ing, std::span<const NodeId>( show ).subspan( imPage.begin, imPage.end - imPage.begin ) );
-            rw::emitTo( stdout, "{}{}. {}{}{}{}{}{}{}{}{}-->", rw::kImpactLegendOpen, rw::kPageRaiseCapClause,
+            rw::emitTo( stdout, "{}{}. {}{}{}{}{}{}{}{}{}{}-->", rw::kImpactLegendOpen, rw::kPageRaiseCapClause,
                          cfg.columnar ? rw::kImpactImportTierColumnarLegend : rw::kImpactImportTierLegend,
+                         rw::impactTsImportLegend( imports.importsUnresolved, imports.tsconfigUnread ).c_str(),   // #220: exactly when the root carries them
                          rw::testedLensLegend( cfg.columnar ), rw::kImpactTestedPartitionLegend,   // A6: the columnar form reads its dense column
                          rw::kTestedLensBlindSpotLegend,                           // F-02: rides with the partition
                          rw::unprovenDefsVerbLegend( rw::UnprovenDefsVerb::Impact, imUnprovenDefs > 0 ).c_str(),   // H1: exactly when the root carries unproven_defs=
-                         rw::declinedCallsLegend( imDeclinedCalls > 0 ),           // exactly when the root carries declined_calls=
+                         rw::declinedCallsLegendWithGate( imDeclinedCalls > 0, g.gateDeclinedCalls > 0 ),           // exactly when the root carries declined_calls=
                          rw::modScopeLegend( imHasModScope ),                      // #60: likewise, exactly when a t="modscope" row is
                          rw::graphCountDisclosure( g.unindexedFiles > 0 ).c_str(), rw::renderDisclosure( prD, rw::DiscloseAs::LegendClause ).c_str() );
         }

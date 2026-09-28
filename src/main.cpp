@@ -26,7 +26,7 @@
 #include "situ.h"
 #include "handoff.h"               // --handoff: the continuation packet (verified + heuristic sections)
 #include "dmm.h"                   // --dmm: the Delta Maintainability Model scalar — the trendable complement to --quality-delta
-#include "readability.h"           // --readability: the Posnett (MSR 2011) per-function readability lens
+#include "readability.h"           // --biggest-first (was --readability): the Posnett (MSR 2011) per-function readability lens
 #include "commentcoherence.h"      // --comment-coherence: Steidl c_coeff + Scalabrino CIC, per documented function/method
 #include "contextratio.h"          // --context-ratio: the LOCAL-REASONING lens (outside-the-file share of a unit's context)
 #include "nonlocalstate.h"         // --nonlocal-state: per function, the non-local MUTABLE state it reaches (reads vs writes)
@@ -60,7 +60,7 @@ static_assert( rw::kTestGateCcxBarMirror == rw::quality::kCcxBar, "situ.h kTestG
 #include "query.h"
 #include "pattern.h"               // R2: the pattern surface's compiler + disclosures (the matcher runs inside the ingest walk)
 #include "verify.h"                // G4 verify-a-claim: the --verify closed claim grammar + verdict/limit vocabularies (runVerify below)
-#include "forpage.h"               // forWidenNext — the ONE spelling of the --for widening page, with its byte ceiling
+#include "forpage.h"               // forWidenNext — the ONE spelling of the --for widening page
 #include "taskroute.h"             // --help-task: deterministic task -> one safe CLI recommendation or abstention
 #include "quality.h"
 #include "cloneidiom.h"          // idiom-class demotion for clone findings — the closed 3-idiom shape classifier both --clones and the quality-delta duplication kind annotate rows with
@@ -160,7 +160,7 @@ using rw::quality::deadCodeEligibleKind;
 // cacheDirLadder(), so repeated invocations on the same tree re-parse only changed files.
 //
 // The 16-hex root field comes from quality.h's `cacheRootKeyHex` — the ONE canonical spelling every cache
-// family now shares (lean/rich here, `ripwire-mcp-<key>.cache`, and shaKeyedCachePath's qheadsnap/qsnap/
+// family now shares (lean/rich here, `ripwire-mcp-<key>-<tag>.cache`, and shaKeyedCachePath's qheadsnap/qsnap/
 // qbody/qhist/qms/qchurn/stier). This function used to open-code the hash with a TRUNCATED FNV-1a offset
 // basis while quality.h used the real one, so one root minted two key families and the byte-budget pin
 // (evictBySizeBudget) could only ever see half of them. The seed that survived is this function's, because
@@ -195,9 +195,17 @@ using rw::quality::deadCodeEligibleKind;
 // TABLE, so a run deserialises only the records for the files it actually crawled, and a save carries
 // over verbatim the records for files it did not crawl — so a narrower configuration is cheap to load
 // and can no longer truncate the shared blob. Gate: test/cacheoffsetcheck.sh.
+//
+// #334 follow-up — THE BUILD TAG. The name also carries (kCacheVersion, the class's parserVer):
+// `ripwire-<rootKey>-lean-c<format>p<parser>.bin`. Keyed by root and class alone, two builds of different formats that
+// alternate on one tree (an installed release and a local build, or two installed versions) refused and rewrote
+// each other's blob on every run. This is NOT the reverted key change above: that one multiplied blobs per root
+// by CONFIGURATION inside one build, which every gate battery exercises; this one adds a blob per root only per
+// FORMAT that actually ran on it, the budget sweep unpins another build's blobs (quality.h evictBySizeBudget),
+// and the age pass retires a version nobody runs any more. See quality.h rootBlobTail.
 std::string defaultCachePath( const std::string& root, bool captureValueUses )
 {
-    return rw::quality::rootKeyedCachePath( root, "ripwire-", captureValueUses ? "-rich.bin" : "-lean.bin" );
+    return rw::quality::rootKeyedCachePath( root, captureValueUses ? rw::quality::RootBlobFamily::Rich : rw::quality::RootBlobFamily::Lean );
 }
 
 // computeHeadSnapshot / gitHeadSha / gitRepoHasHistory / cacheDirLadder now live in quality.h (the
@@ -1204,9 +1212,10 @@ inline std::string churnDecayWindowLabel( std::string_view minedSpan )
 // that shapes the CORPUS was dropped from the invocation the tool told the caller to paste: --exclude,
 // --no-ignore, --ignore-tests, --stable, --legend, --max-tokens, --token-budget. `--in=a --exclude=b` reported
 // total="6" and handed back a next= that yields twelve rows — a page pointer into a different corpus, which is
-// worse than no pointer at all. And the scoped next= had no LENGTH cap, while every other next= in the tool
-// returns "" past kNextAttrMaxBytes (forPageInvocation, flipimpact): a long --since plus a deep DIR plus
-// --limit/--offset sails past 120 bytes and pastes wrong.
+// worse than no pointer at all. The scoped next= carries no LENGTH cap either, the same as every other next=
+// producer (forPageInvocation, flipimpact): nextAttrXml (nextverb.h) never truncates or drops next= on length
+// (2026-09-25 fix for a cut answer's next= being dropped past 120 B); a long --since plus a deep DIR plus
+// --limit/--offset is simply emitted in full.
 //
 // THE SHAPE. One function, two callers, one cap. `withIn` picks the scoped page (--in=DIR carried, at the next
 // offset) or the stub's "same run without --in".
@@ -1277,7 +1286,10 @@ inline std::string scopedMapNextInvocation( const rw::Config& cfg, std::string_v
             inv += " --limit=" + std::to_string( cfg.pageLimit );
         }
     }
-    return inv.size() > rw::kNextAttrMaxBytes ? std::string() : inv;
+    // Built and returned in full, whatever its length (2026-09-25 fix: a cut answer's next= used to be
+    // dropped past 120 B): nextAttrXml (nextverb.h) carries no ceiling on next=, so a long --since plus a
+    // deep DIR plus --limit/--offset is simply pasted in full rather than truncated or dropped.
+    return inv;
 }
 
 inline void scopedRecentPage( const MainDispatch& d, const std::vector<rw::RecentFile>& sorted, ChurnRanking& cr )
@@ -1859,7 +1871,7 @@ int runDefaultMap( const MainDispatch& d )
         if( nextOffset < scopedRecentOf )
         {
             scopedNext        = scopedMapNextInvocation( cfg, mapAnn.scopeDir, /*withIn=*/true, nextOffset );
-            mapAnn.scopedNext = scopedNext;   // "" past kNextAttrMaxBytes: has_more= still says a page exists
+            mapAnn.scopedNext = scopedNext;   // always the full invocation now (no length ceiling on next=)
         }
         stubNext           = scopedMapNextInvocation( cfg, mapAnn.scopeDir, /*withIn=*/false, 0 );
         mapAnn.stubSymbols = true;
@@ -1891,7 +1903,7 @@ int runDefaultMap( const MainDispatch& d )
         {
             return {};
         }
-        serialize( m, ing, rank, g.outOff, g.outTargets, k, cfg.mostImportantLast, cfg.metrics, fanInPtr, &g.ambOut, cfg.stable, mapProvPtr, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut, g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, /*outEstTokens=*/nullptr, extraPayloadTokens, mapAnn, /*statsFirstScreen=*/false, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut );
+        serialize( m, ing, rank, g.outOff, g.outTargets, k, cfg.mostImportantLast, cfg.metrics, fanInPtr, &g.ambOut, cfg.stable, mapProvPtr, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut, g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, /*outEstTokens=*/nullptr, extraPayloadTokens, mapAnn, /*statsFirstScreen=*/false, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut, g.gateDeclinedCalls );
         const rw::MemoryStreamBytes measured = probe.finish();
         return measured.isWhole ? std::string( measured.bytes ) : std::string();
     };
@@ -1904,7 +1916,7 @@ int runDefaultMap( const MainDispatch& d )
             DISCLOSE( maxTokensFit, rw::MapAnnotations::MaxTokensFit::DisclosureWhy::ProbeUnmeasured, "runDefaultMap: open_memstream failed for the --max-tokens fit probe — the map is emitted unshaped and its ceiling unverified" );
             return 0;
         }
-        serialize( m, ing, rank, g.outOff, g.outTargets, k, cfg.mostImportantLast, cfg.metrics, fanInPtr, &g.ambOut, cfg.stable, mapProvPtr, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut, g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, /*outEstTokens=*/nullptr, extraPayloadTokens, mapAnn, /*statsFirstScreen=*/false, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut );
+        serialize( m, ing, rank, g.outOff, g.outTargets, k, cfg.mostImportantLast, cfg.metrics, fanInPtr, &g.ambOut, cfg.stable, mapProvPtr, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut, g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, /*outEstTokens=*/nullptr, extraPayloadTokens, mapAnn, /*statsFirstScreen=*/false, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut, g.gateDeclinedCalls );
         const rw::MemoryStreamBytes measured = probe.finish();
         if( !measured.isWhole )
         {
@@ -1948,7 +1960,7 @@ int runDefaultMap( const MainDispatch& d )
         }
         serializeJson( m, ing, rank, g.outOff, g.outTargets, k, cfg.mostImportantLast, cfg.metrics,
                        fanInPtr, &g.ambOut, cfg.stable, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut,
-                       g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, /*outEstTokens=*/nullptr, mapProvPtr, mapAnn, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut );
+                       g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, /*outEstTokens=*/nullptr, mapProvPtr, mapAnn, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut, g.gateDeclinedCalls );
         const rw::MemoryStreamBytes measured = probe.finish();
         if( !measured.isWhole )
         {
@@ -2283,12 +2295,18 @@ int runDefaultMap( const MainDispatch& d )
             { packSource( f, ing, rank, cfg.packTopN, cfg.packBudgetBytes, redactPtr ); },
             rw::kBytesPerTokenBody );
     }
+    // &calleeOrder (lane/cutfix-bodies): each body's <calls> listing is cut at 16 rows, and with no query in scope it
+    // kept the sixteen LOWEST node ids — an arbitrary cut, however honestly disclosed. It is now ordered FEWEST
+    // SAME-NAMED DEFINITIONS FIRST (serialize.h calleeNameSpecificity: why that and not the map's PageRank, with the
+    // measurement). Built only when a body is expanded; the same vector rides the two emissions below, so the
+    // charged render and the emitted one cannot differ.
+    const std::vector<float> calleeOrder = expandNodes.empty() ? std::vector<float>{} : rw::calleeNameSpecificity( ing );
     if( !expandNodes.empty() )
     {
         bodiesSection = rw::chargeSection( [ & ]( std::FILE* f )
             { packBodies( f, ing, expandNodes, cfg.packBudgetBytes, g.outOff, g.outTargets, cfg.compress, redactPtr,
                           expandRanges.empty() ? nullptr : &expandRanges, d.notesPtr, /*outEmitted=*/nullptr,
-                          /*truncateOversizedFirst=*/true, /*withFileContext=*/true, mapRootArg ); },   // V1: octocode F2 sibs=/inc=
+                          /*truncateOversizedFirst=*/true, /*withFileContext=*/true, mapRootArg, &calleeOrder ); },   // V1: octocode F2 sibs=/inc=
             rw::kBytesPerTokenBody );
     }
     if( !outlineNodes.empty() )
@@ -2628,7 +2646,7 @@ int runDefaultMap( const MainDispatch& d )
         {
             emitSection( bodiesSection, [ & ]{ packBodies( out, ing, expandNodes, cfg.packBudgetBytes, g.outOff, g.outTargets, cfg.compress, redactPtr,
                                                            expandRanges.empty() ? nullptr : &expandRanges, d.notesPtr, /*outEmitted=*/nullptr,
-                                                           /*truncateOversizedFirst=*/true, /*withFileContext=*/true, mapRootArg ); } );
+                                                           /*truncateOversizedFirst=*/true, /*withFileContext=*/true, mapRootArg, &calleeOrder ); } );
             bodiesEmittedEarly = true;
         }
         // T3: fill-aware auto important-last — ONLY on this, the default map emission. --no-auto-order opts
@@ -2650,11 +2668,11 @@ int runDefaultMap( const MainDispatch& d )
         {
             serializeJson( out, ing, rank, g.outOff, g.outTargets, mapTopK, cfg.mostImportantLast, cfg.metrics,
                            fanInPtr, &g.ambOut, cfg.stable, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut,
-                           g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, &mapEstTokens, mapProvPtr, mapAnn, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut );
+                           g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, &mapEstTokens, mapProvPtr, mapAnn, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut, g.gateDeclinedCalls );
         }
         else
         {
-            serialize( out, ing, rank, g.outOff, g.outTargets, mapTopK, cfg.mostImportantLast, cfg.metrics, fanInPtr, &g.ambOut, cfg.stable, mapProvPtr, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut, g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, &mapEstTokens, payloadTokens, mapAnn, /*statsFirstScreen=*/false, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut );
+            serialize( out, ing, rank, g.outOff, g.outTargets, mapTopK, cfg.mostImportantLast, cfg.metrics, fanInPtr, &g.ambOut, cfg.stable, mapProvPtr, cboPtr, testedPtr, lcom4Ptr, ampPtr, &g.unresolvedOut, g.bindLabel.empty() ? nullptr : &g.bindLabel, mapAutoOrder, &mapEstTokens, payloadTokens, mapAnn, /*statsFirstScreen=*/false, mapRootArg, &g.locPinOut, g.externalCalls, &g.declinedOut, g.gateDeclinedCalls );
         }
     }
     else
@@ -2702,7 +2720,7 @@ int runDefaultMap( const MainDispatch& d )
     {
         emitSection( bodiesSection, [ & ]{ packBodies( out, ing, expandNodes, cfg.packBudgetBytes, g.outOff, g.outTargets, cfg.compress, redactPtr,
                                                        expandRanges.empty() ? nullptr : &expandRanges, d.notesPtr, /*outEmitted=*/nullptr,
-                                                       /*truncateOversizedFirst=*/true, /*withFileContext=*/true, mapRootArg ); } );   // L3: --expand bodies surface notes; V1: sibs=/inc=
+                                                       /*truncateOversizedFirst=*/true, /*withFileContext=*/true, mapRootArg, &calleeOrder ); } );   // L3: --expand bodies surface notes; V1: sibs=/inc=
     }
     if( !outlineNodes.empty() )
     { // resolved (and refused on a miss) above, before the first stdout byte
@@ -2789,7 +2807,7 @@ int runDefaultMap( const MainDispatch& d )
 //
 //   --index-out                                            pre-ingest, ahead of EVERY verb incl. the family
 //   --ensemble, --context-ratio                            runMaintenanceViews arms 1-2, ahead of --hotspots
-//   --readability, --comment-coherence, --nonlocal-state,   runQualityViews arms 1-6, ahead of --dead-code
+//   --biggest-first, --comment-coherence, --nonlocal-state, runQualityViews arms 1-6, ahead of --dead-code
 //   --quality-panel, --naming-calibration, --naming-consistency
 //   --handoff                                              runChangeViews arm 1, ahead of --situ
 //   --field-affinity                                       between --layout and --doc-drift
@@ -2846,7 +2864,7 @@ VerbPrecedence scanReportVerbPrecedence( const rw::Config& c )
         { "--owners",            c.owners                 }, { "--quality-baseline", c.qualityBaseline    },
         { "--quality-delta",     c.qualityDelta           }, { "--dmm",           c.dmm                   },
         // §F1: runQualityViews' six lenses, in its own arm order, all ahead of --dead-code
-        { "--readability",       c.readability            }, { "--comment-coherence", c.commentCoherence  },
+        { "--biggest-first",     c.readability            }, { "--comment-coherence", c.commentCoherence  },
         { "--nonlocal-state",    c.nonlocalState          }, { "--quality-panel", c.qualityPanel          },
         { "--naming-calibration", c.namingCalibration     }, { "--naming-consistency", c.namingConsistency },
         { "--dead-code",         c.deadCode               },   // the row order IS the dispatch order (test/dispatchordercheck.sh pins every pair) — never re-pair for layout
@@ -3385,9 +3403,9 @@ int runHelpTask( const rw::Config& cfg, const rw::IngestResult& ing, const std::
         out += "<choice intent=\"" + ex( choice.id ) + "\" skill=\"" + ex( choice.skill ) + "\" reason=\"" + ex( choice.reason );
         out += "\" score=\"" + std::to_string( choice.score ) + "\"";
         // present-only: the WIDENING follow-up of a --for-shaped recommendation, nothing on any other.
-        // Keyed off the INTENT, and spelled by forpage.h's own forWidenNext — the same quoting and the same
-        // kNextAttrMaxBytes ceiling the answer's next= obeys, so a task too long to paste emits nothing
-        // rather than a hint that pastes wrong.
+        // Keyed off the INTENT, and spelled by forpage.h's own forWidenNext — the same quoting, and (as of
+        // 2026-09-25) emitted in full whatever its length: nextAttrXml carries no ceiling on next=, so a
+        // long task is pasted in full rather than truncated or dropped.
         const bool widens = rw::taskroute::isOneOf( choice.id, std::begin( rw::taskroute::kForShapedIntents ),
                                                    std::size( rw::taskroute::kForShapedIntents ) );
         out += rw::nextAttrXml( widens ? rw::forWidenNext( cfg.helpTask ) : std::string() );

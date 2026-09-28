@@ -523,46 +523,19 @@ inline void runParseWorker( ParsePoolShared& sh, unsigned t )
                 }
             }
 
-            // hostile/degenerate JSON guard — must run BEFORE the parse (that is the whole point);
-            // the skip is a degrade with a one-line stderr note, matching the house skip style.
-            if( le->lang == Lang::Json && jsonNestsTooDeep( bytes ) )
-            {
-                rw::emitTo( stderr, "[ripwire] {}: json nesting > {} levels — treated as data, not config (skipped)\n",
-                              path.c_str(), kMaxJsonNestDepth );
-                continue;
-            }
-
-            // hostile/degenerate YAML guard — MEMORY-SAFETY load-bearing, not just a perf guard:
-            // tree-sitter-yaml's scanner serialize() corrupts memory past ~253 block indent levels
-            // (see kMaxYamlNestDepth in ingest.h; the vendored scanner also carries the bounds fix
-            // under third_party/patches/yaml/, so this is the FIRST of two independent layers).
-            // Same house skip style as the JSON guard above: refuse BEFORE the parse, one stderr line.
-            if( le->lang == Lang::Yaml && yamlNestsTooDeep( bytes ) )
-            {
-                rw::emitTo( stderr, "[ripwire] {}: yaml nesting > {} levels — treated as data, not config (skipped)\n",
-                              path.c_str(), kMaxYamlNestDepth );
-                continue;
-            }
-
-            // hostile/degenerate Kotlin guard — PROCESS-SURVIVAL load-bearing, and itemized in --skipped (ingest_prewarm.h)
-            if( refuseKotlinNesting( *le, bytes, path.c_str(), fileId, scan ) )
+            // hostile/degenerate nesting guard — MUST run BEFORE the parse (that is the whole point). #157:
+            // one call (ingest_prewarm.h refuseNesting), covering json/yaml/markdown/kotlin — json is a
+            // performance guard, the other three are MEMORY-SAFETY / PROCESS-SURVIVAL load-bearing (see
+            // ingest.h's per-ceiling comments for each defect's arithmetic; the vendored scanner patches
+            // under third_party/patches/ are the SECOND, independent layer for those three).
+            // Itemized in --skipped (why="nest-refused") for every language now, not just Kotlin.
+            if( refuseNesting( *le, bytes, path.c_str(), fileId, scan ) )
             {
                 continue;
             }
 
             if( le->lang == Lang::Markdown )
             {
-                // hostile/degenerate markdown guard — MEMORY-SAFETY load-bearing, the yaml pair's
-                // twin: tree-sitter-markdown's scanner serialize() memcpys its open-blocks stack
-                // with NO bounds check (OOB at ~255 nested blockquote/list markers; see
-                // kMaxMdBlockDepth in ingest.h). The vendored scanner also carries the clamp under
-                // third_party/patches/markdown/, so this is the FIRST of two independent layers.
-                if( mdNestsTooDeep( bytes ) )
-                {
-                    rw::emitTo( stderr, "[ripwire] {}: markdown blockquote/list nesting > {} levels — treated as data, not a doc (skipped)\n",
-                                  path.c_str(), kMaxMdBlockDepth );
-                    continue;
-                }
                 if( !prepareParserFor( pg.p, *le ) )
                 {
                     continue;
@@ -582,6 +555,25 @@ inline void runParseWorker( ParsePoolShared& sh, unsigned t )
             {
                 if( !prepareParserFor( pg.p, *le ) )
                 {
+                    continue;
+                }
+
+                // .astro: restrict the parse to the `---` frontmatter. The guard lifts the restriction on
+                // EVERY exit from this scope, including the queued-tags `continue` below — pg.p is reused.
+                IncludedRangeGuard rangeGuard;
+                const AstroFrontmatter astro = restrictAstroToFrontmatter( pg.p, *le, bytes, rangeGuard );
+                if( astro != AstroFrontmatter::Ok )
+                {
+                    // A template-only .astro is ordinary and says nothing. An UNTERMINATED fence is a file whose
+                    // frontmatter we can see the start of and cannot extract — a silent zero unless disclosed, so
+                    // it rides the existing extract-partial channel and lands in --skipped rather than vanishing.
+                    if( astro == AstroFrontmatter::Unterminated )
+                    {
+                        ExtractShortfall astroShort;
+                        DISCLOSE( astroShort, ExtractShortfall::DisclosureWhy::AstroFrontmatterUnterminated,
+                                  "ingest: an .astro opened a `---` fence and never closed it — frontmatter not extracted (--skipped why=extract-partial)" );
+                        notePartialExtract( scan, fileId, astroShort, bytes.size() );
+                    }
                     continue;
                 }
 
@@ -610,6 +602,7 @@ inline void runParseWorker( ParsePoolShared& sh, unsigned t )
                 {
                     pendingParsedBytes += bytes.size();
                     pendingParsed.emplace_back( static_cast<std::uint32_t>( fileId ), le, std::move( bytes ), tree.release(), std::move( ppDead ) );
+                    bytes.clear();   // moved-from is "valid but unspecified": make it empty. Every path refills it (readFile) before a read
                     continue;
                 }
 

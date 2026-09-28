@@ -422,7 +422,7 @@ namespace tracelocus_detail
 {
 
 // row caps — bounds, never silent: TestHop::cappedCount records what they dropped and the block emits it
-// beside the two PRE-cap candidate counts, so callee + basename = rows + capped closes for a reader.
+// beside the two PRE-cap candidate counts, so callee + basename = rows + dropped closes for a reader.
 inline constexpr std::size_t kTestHopCalleeRowCap   = 5;
 inline constexpr std::size_t kTestHopBasenameRowCap = 3;
 
@@ -566,7 +566,7 @@ struct TestHopRow
 };
 
 // the whole hop: whether it fired, what it hopped FROM, the paired file it found (if any), the rows it
-// serves, and the two PRE-cap candidate counts whose arithmetic closes against rows + capped.
+// serves, and the two PRE-cap candidate counts whose arithmetic closes against rows + dropped.
 struct TestHop
 {
     bool                    isFired                = false;
@@ -755,8 +755,8 @@ inline constexpr std::string_view kTestHopLegend =
     "invisible to a static call graph, so a pair can be wrong. The <trace> frame map is UNCHANGED and the "
     "innermost frame keeps rank 1; what the hop moves is the SERVED order - these rows rank in <sigs> "
     "directly after the innermost frame and before the remaining frames, and the first hop row's body is "
-    "served beside the innermost frame's. callee= and basename= are PRE-cap candidate counts and capped= "
-    "is what the row caps dropped, so callee + basename = rows + capped. ";
+    "served beside the innermost frame's. callee= and basename= are PRE-cap candidate counts and dropped= "
+    "is what the row caps dropped, so callee + basename = rows + dropped. ";
 
 // empty unless the hop fired — the seam that keeps every non-test trace's header byte-identical
 inline std::string_view hopLegendOf( const TestHop& hop ) noexcept { return hop.isFired ? kTestHopLegend : std::string_view{}; }
@@ -790,7 +790,9 @@ inline std::optional<std::string> renderTestHopBlock( const IngestResult& ing, c
 
     const Symbol&     fromSym  = ing.symbols[ hop.fromSymbolId ];
     const std::string pairPath = hop.pairFileId == kNoTraceFile ? std::string() : ex( pathRel( hop.pairFileId ) );
-    rw::emitTo( m, "<test_hop heuristic=\"1\" from=\"{}\" from_p=\"{}:{}\" pair=\"{}\" callee=\"{}\" basename=\"{}\" rows=\"{}\" capped=\"{}\">",
+    // cut-fix E: the dropped-row COUNT is dropped=, not capped= — capped= is a 0|1 bit tool-wide (pageview.h, THE
+    // TRUNCATION VOCABULARY rule 3; --abi made the same move). The block emits no shown=, so it carries no capped= either.
+    rw::emitTo( m, "<test_hop heuristic=\"1\" from=\"{}\" from_p=\"{}:{}\" pair=\"{}\" callee=\"{}\" basename=\"{}\" rows=\"{}\" dropped=\"{}\">",
         ex( fromSym.name ).c_str(), ex( pathRel( fromSym.fileId ) ).c_str(), fromSym.line, pairPath.c_str(),
         hop.calleeCandidateCount, hop.basenameCandidateCount, hop.rows.size(), hop.cappedCount );
     for( std::size_t i = 0; i < hop.rows.size(); ++i )
@@ -1182,12 +1184,24 @@ inline FromTraceResult fromTraceBundleText( const IngestResult& ing, const Graph
         rw::MemoryStream stream;
         if( std::FILE* const m = stream.open() )
         {
+            SigsCutReport sigsCut;
             packSignatures( m, ing, rank, int( servedOrder.size() ), in.sigLadderBudgetBytes, /*metrics=*/true,
                             in.fanIn, in.impure, in.redact,
                             nullptr, nullptr, in.tested, in.amp,     // Q3: tested/amp folded on; churn/clone omitted (no git walk here)
                             /*rankAdaptivePayload=*/true, sigsBudget,
                             in.notes,                                // L3: field-notes surfacing (inert when null)
-                            in.rootArg );                            // R-R: root-relative <f p=…>
+                            in.rootArg,                              // R-R: root-relative <f p=…>
+                            /*hasRelevanceFloor=*/false, /*droppedPositiveOut=*/nullptr, /*shownIdsOut=*/nullptr,
+                            /*cappedOut=*/nullptr, /*topRowNext=*/{}, &sigsCut );
+            // cut-fix lane A: the <sigs> tag's cut readings (docs_dropped=, shrunk-not-dropped), the --for twin's clauses
+            // verbatim, as a comment right after the block they define: this lens's header is priced before the section
+            // renders, so the reading rides the section (the delivered-document ladder below charges it). Absent when the
+            // tag carries neither case.
+            if( const std::string cutNotes = sigsCutLegendNotes( sigsCut.isCapped, sigsCut.shown, sigsCut.total, sigsCut.docsDropped );
+                !cutNotes.empty() )
+            {
+                rw::emitTo( m, "<!--{} -->", cutNotes );
+            }
 
             const std::vector<NodeId> bodyIds = traceBodyIds( part, hop );   // LB-A: innermost frame, then the top hop row
             packBodies( m, ing, bodyIds, in.bodyBudgetBytes, g.outOff, g.outTargets, in.compress, in.redact,

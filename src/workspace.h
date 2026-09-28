@@ -59,22 +59,7 @@ namespace wsdetail
     // their own delimiter instead of hand-rolling the same loop (the shared primitive behind BOTH).
     inline std::vector<std::string_view> segmentsOf( std::string_view p, char delim = '/' )
     {
-        std::vector<std::string_view> segs;
-        std::size_t i = 0;
-        while( i < p.size() )
-        {
-            std::size_t j = p.find( delim, i );
-            if( j == std::string_view::npos )
-            {
-                j = p.size();
-            }
-            if( j > i )
-            {
-                segs.push_back( p.substr( i, j - i ) );
-            }
-            i = j + 1;
-        }
-        return segs;
+        return splitSegments( p, delim );   // arch.h — the shared primitive (resolve.h's workspace globs read it too)
     }
 
     // the k-segment suffix of `segs`, joined with '/'. k is clamped to segs.size().
@@ -277,6 +262,10 @@ inline void mergeCrawlDisclosures( IngestResult& m, IngestResult& part, const Wo
     for( std::size_t i = 0; i < part.files.size(); ++i )
     {
         m.fileHealth.push_back( i < part.fileHealth.size() ? part.fileHealth[ i ] : FileHealth{} );
+        // #157: nestRefusedFile is EXACT and per-fileId like fileHealth, so it concatenates the same way —
+        // a part that never ran the parse pool contributes 0 ("not refused"), which is the honest reading
+        // for a root nothing measured, same as fileHealth's own default-row fallback above.
+        m.nestRefusedFile.push_back( i < part.nestRefusedFile.size() ? part.nestRefusedFile[ i ] : std::uint8_t( 0 ) );
     }
 }
 

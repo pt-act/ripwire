@@ -1573,14 +1573,17 @@ for d in unindexed_0 unindexed_1; do
 done
 # THE ONE DIFFERENCE between the two corpora: a file no grammar in this build can read (real input, really
 # mutated — the identical extraction runs over both).
-printf -- '---\nconst x = 1;\n---\n<p>{x}</p>\n' >"$C17/unindexed_1/src/page.astro"
+# `.vue`, NOT `.astro`: issue #67 made .astro indexable (it rides the TypeScript grammar over its `---`
+# frontmatter), which is exactly the "if .astro ever became indexable" case the presence guards below were
+# written for — they fired, and this is the update they asked for.
+printf -- '<script setup lang="ts">\nconst x = 1;\n</script>\n<template><p>{{ x }}</p></template>\n' >"$C17/unindexed_1/src/page.vue"
 for d in unindexed_0 unindexed_1; do
     # L1 (2026-09-19): #17 measures the FULL legend's #66 comment (graph_unindexed= prose), so it asks for the full legend.
     "$BIN" "$C17/$d" --connect=render,greet --no-cache --legend=full >"$TMP/c17_$d.xml" 2>/dev/null
 done
 C17_LEGEND='graph_unindexed=N is a third gauge'
 # (a) presence guards — assert the mutation TOOK before trusting any number derived from it. Without these
-#     the arm is the "wrong population" shape: if .astro ever became indexable, or the legend moved, the two
+#     the arm is the "wrong population" shape: if .vue ever became indexable, or the legend moved, the two
 #     corpora would be identical and the comparison below would prove nothing while staying green.
 C17_CLEAN_U="$(  root_attr "$TMP/c17_unindexed_0.xml" connect graph_unindexed )"
 C17_UNIDX_U="$(  root_attr "$TMP/c17_unindexed_1.xml" connect graph_unindexed )"
@@ -1693,7 +1696,10 @@ else
         grep -aqF 'confidence= derives from the ranked head' "$RZ/o.xml" && RZ_PC=$(( RZ_PC + 1 ))
         grep -aqF 'tail: file-grain tail' "$RZ/o.xml"                    && RZ_PC=$(( RZ_PC + 1 ))
         grep -aqF "$RZ_CLAUSE_ROUTE" "$RZ/o.xml"                         && RZ_PC=$(( RZ_PC + 1 ))
-        RZ_PO=0; grep -aqF 'over_ceiling="1"' "$RZ/o.xml" && RZ_PO=1
+        # the ROOT's verdict only (read off the <ctx …> open tag): since lane/cutfix-bodies a <b over_ceiling="1"> marks
+        # a --detail body whose first line alone exceeds the BODY allowance, which is not the root's est_tokens claim,
+        # and a CDATA body can spell the literal too.
+        RZ_PO=0; grep -aoE '^<ctx [^>]*>' "$RZ/o.xml" | grep -qF 'over_ceiling="1"' && RZ_PO=1
         if [ "$RZ_PN" = "0" ] && [ "$RZ_PC" = "3" ] && [ -n "$RZ_PE" ] && [ "$RZ_PE" -le "$RZ_PROBE" ] && [ "$RZ_PO" = "0" ]; then
             ok "#18 rung zero at --token-budget=$RZ_PROBE (5 tokens above the $RZ_E this document prices at): all three droppable clauses ride, est_tokens=$RZ_PE <= $RZ_PROBE, no over_ceiling=, $RZ_PB B"
         else

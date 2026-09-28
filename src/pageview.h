@@ -172,17 +172,22 @@ inline constexpr int kCochangePartnerCap  = 30;
 // ── LB-H (r10 GitNexus round) — the display cap on --impact's SECONDARY import tier ──────────────────────
 // Deliberately the SAME 40 as the symbol rows above rather than a third number: it counts a comparable
 // unit (one row per file, one row per symbol) on the same screen, and a second calibration nobody could
-// re-derive is how this family drifted apart the first time. It is NOT raisable by --limit — rule 6 above
-// reserves the paging half for the PRIMARY listing, so a secondary one discloses through
-// shown_importers=/importers_capped= and nothing else. Nothing is hidden by that: importers= on the root
-// is always the full count, and --uses=SYM lists the import SITES under its own, separate cap.
+// re-derive is how this family drifted apart the first time. Rule 6 above reserves the PAGING half for the
+// PRIMARY listing, so this one discloses through shown_importers=/importers_capped= and never pages: offset=
+// does not move it. cut-fix C (2026-09-23) made it SIZED by --limit, though (graph.h impactImportTier): when it
+// was fixed at 40, a cut tier had no call at all that fetched the rest, which is the one thing principle 3 of
+// docs/METHODOLOGY.md §9 asks of a cut. Sizing rather than paging keeps pagingsweepcheck's continuity arm true:
+// the <f> rows are siblings AFTER the <s> rows, never inside a paged row (the --doc-drift shape, which stays
+// unraisable for exactly that reason — docdrift.h). importers= on the root is always the full count.
 inline constexpr int kImportReachRowCap   = 40;
 // P4 (capture-audit 2026-09-04, lane L7): default windows for the three verbs that had none. Lens 8 measured the
 // defaults on the ripwire tree: --tree 187,209 B (3,773 rows), --zoom 433,867 B (390 top modules x 6 levels),
 // --external-surface 67,862 B (1,422 rows led by sh builtins). Each is a first screen ≤ ~12 KB here, paged with the
 // house quintet + next=. Explicit --limit=N raises any of them (effectiveRowCap).
+inline constexpr std::size_t kTreeSymbolsPerFile = 3;   // cut-fix E: --tree's <s> rows per <file>, disclosed by the root's shown_symbols=/symbols_capped=
 inline constexpr int kTreeRowCap            = 80;    // files, by best symbol's rank: 80 rows ≈ 11.5 KB on this repo (100 = 14.3 KB)
-inline constexpr int kZoomTopModuleCap      = 40;    // top-level modules, size desc (their children ride along: levels_shown=2)
+inline constexpr int kZoomTopModuleCap      = 40;    // top-level modules, rank-mass desc then size desc then id (massSizeIdLess; their children ride along: levels_shown=2)
+inline constexpr std::size_t kZoomBridgeCap = 12;    // cut-fix E: --zoom's <bridge> rows (traffic desc), a secondary listing disclosed by secondaryCutAttrs
 inline constexpr int kExternalSurfaceRowCap = 100;   // names, by ref count (≈ 5.2 KB on this repo)
 
 // The values pageDisclosure() renders under EVERY PageSyntax (XML attrs and §A3a/§A4c JSON keys) — hoisted

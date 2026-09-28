@@ -179,6 +179,7 @@ struct DeltaBasis
     gtl::btree_map<std::string, rw::quality::AckRecord> acks;
     rw::quality::IdentityHealing                        healing;
     std::size_t                                         registerMacroExcluded = 0;   // P2.2: disclosed dead-code exemption count
+    std::size_t                                         declinedCallExcluded  = 0;   // dead-code exemption by a declined call (quality.h isDeadCandidate)
     std::size_t                                         apiNewSurface         = 0;   // Q-DIAL-4: new PUBLIC symbols this change added — the count that replaced one never-gating row each
     std::size_t acksBadLines = 0;   // 2026-09-06: .ripwire_quality_acks lines skipped as unparseable (disclosed on the root)
     // #228: WHICH basis produced baseSel.snapshot when the marker is one of the git-HEAD family, and WHY when
@@ -226,7 +227,7 @@ std::optional<int> resolveDeltaBasis( const MainDispatch& d, const std::string& 
                                              out.deltaRoot, root, cfg.qualityAck, refs.rangeSpan );
         out.regs    = quality::computeDelta( refs.target().ing, refs.target().g, out.baseSel.snapshot,
                                              out.deltaRoot, cfg.excludes, cfg.maxFileBytes, &out.registerMacroExcluded, &out.apiNewSurface,
-                                             &out.cloneIdioms );
+                                             &out.cloneIdioms, &out.declinedCallExcluded );
         return std::nullopt;
     }
 
@@ -307,7 +308,7 @@ std::optional<int> resolveDeltaBasis( const MainDispatch& d, const std::string& 
     out.healing = quality::healIdentity( out.baseSel.snapshot, out.acks, d.ing, d.g,
                                          std::string( cfg.rootPath ), root, cfg.qualityAck );
     out.regs = quality::computeDelta( d.ing, d.g, out.baseSel.snapshot, cfg.rootPath, cfg.excludes, cfg.maxFileBytes, &out.registerMacroExcluded, &out.apiNewSurface,
-                                      &out.cloneIdioms );
+                                      &out.cloneIdioms, &out.declinedCallExcluded );
     return std::nullopt;
 }
 
@@ -781,6 +782,7 @@ struct QualityDeltaLegendParts
     bool                                          anyForeignAck; // foreign-acks= is on the root, with foreign-scope sa rows under it
     std::size_t                                   baselineAbsorbed; // H11: baseline_absorbed= on the root (0 = attribute absent)
     const char*                                   headBasis;     // #228: head_basis= value on the root (nullptr = attribute absent)
+    bool                                          anyDeclinedCallExcluded = false;   // declined-call-excluded= is on the root
 };
 
 // A DEFINITION IS EMITTED WHEN THE THING IT DEFINES IS IN THE DOCUMENT. Nothing is dropped and no limit is
@@ -832,6 +834,11 @@ inline void emitQualityDeltaLegend( const QualityDeltaLegendParts& p )
     if( p.anyRegisterMacroWarning )
     {
         std::fputs( kQdRegisterMacroWarnLegend, stdout );
+    }
+    if( p.anyDeclinedCallExcluded )
+    {
+        std::fputs( "declined-call-excluded= is a FLOOR, not a finding: symbols this run kept out of the dead-code kind only because a call "
+                    "the resolver declined to bind (the map's declined=) could have meant them. Never gates; absent at zero. ", stdout );
     }
 
     // (3) the two identity re-filings, each keyed to the attribute family it defines. The second is
@@ -1236,7 +1243,7 @@ std::optional<int> runQualityDelta( const MainDispatch& d )
             if( backfilled.resolved > 0 || backfilled.refreshed > 0 || backfilled.unverified > 0 || backfilled.unresolved > 0 )
             {
                 rw::emitTo( stderr, "ripwire: ack provenance backfill — {} clone row(s) reconstructed from the current tree, {} re-derived, {} left UNVERIFIED (their group was not found here — a floor, not proof it is gone), "
-                                      "{} left legacy (member set does not clone here), {} ineligible (no current-tree fact answers their kind), {} already measured (left alone). "
+                                      "{} left legacy (member set not found cloning here — a floor, not proof it is gone), {} ineligible (no current-tree fact answers their kind), {} already measured (left alone). "
                                       "prov=recon is what the idiom is NOW, as of the last run that could check it — not what was measured when the row was accepted.\n",
                               backfilled.resolved, backfilled.refreshed, backfilled.unverified, backfilled.unresolved, backfilled.ineligible, backfilled.measured );
             }
@@ -1297,6 +1304,34 @@ std::optional<int> runQualityDelta( const MainDispatch& d )
             }
             if( ackWritten == 0 && !cfg.qualityAckOnly.empty() )
             {
+                // M1 FOLLOW-UP (round train-18, rv-ack-provenance-backfill.md): this refusal used to discard
+                // the backfill above unconditionally — `backfillCloneAckProvenance` already mutated `acks` in
+                // memory, but returning here without ever calling writeAckRecords threw that healing away,
+                // so a rubber-stamp-guarded --ack-only that (correctly) refused to accept anything ALSO
+                // silently un-did an otherwise-independent repair to the ledger's provenance. Same
+                // canonical-bytes rule H10's ackNothingToAccept applies when there is nothing to accept at
+                // all: a ledger already equal to its own canonical bytes is left untouched (no spurious
+                // diff); a non-canonical one — including one this run's backfill just healed — is rewritten
+                // and the run says so. This never accepts a finding and the refusal's exit code is unchanged.
+                const bool nonCanonical = !acks.empty()
+                    && quality::renderAckRecords( acks ) != docparse::detail::readRegularFile( "the quality-acks ledger", acksFile ).value_or( std::string() );
+                if( nonCanonical )
+                {
+                    // A failed heal is said, not folded into "nothing written" (CodeRabbit on #331): the same
+                    // "could not write" ackNothingToAccept prints for the same failure. writeAckRecords has already
+                    // DISCLOSEd on its answerRefused sink; the exit code is 1 either way.
+                    if( !quality::writeAckRecords( acksFile, acks ) )
+                    {
+                        rw::emitTo( stderr, "ripwire: --ack-only={} matched none of the {} finding(s) — nothing accepted; could not write {} "
+                                              "(it was not in canonical form, and re-serialising it failed)\n",
+                                      std::string_view( cfg.qualityAckOnly.data(), cfg.qualityAckOnly.size() ), regs.size(), acksFile.c_str() );
+                        return 1;
+                    }
+                    rw::emitTo( stderr, "ripwire: --ack-only={} matched none of the {} finding(s) — nothing accepted, but {} was not in canonical form "
+                                          "(ack provenance backfill / legacy rows) and has been re-serialised\n",
+                                  std::string_view( cfg.qualityAckOnly.data(), cfg.qualityAckOnly.size() ), regs.size(), acksFile.c_str() );
+                    return 1;
+                }
                 rw::emitTo( stderr, "ripwire: --ack-only={} matched none of the {} finding(s) — nothing written\n", std::string_view( cfg.qualityAckOnly.data(), cfg.qualityAckOnly.size() ), regs.size() );
                 return 1;
             }
@@ -1450,8 +1485,10 @@ std::optional<int> runQualityDelta( const MainDispatch& d )
             const std::string absorbedJson = baselineAbsorbed == 0 ? std::string()
                                             : ",\"baseline_absorbed\":" + std::to_string( baselineAbsorbed );
             // #228: the JSON twin of head_basis=, under the same absent-means-the-ordinary-archived-tree rule.
-            const std::string headBasisJson = basis.headBasis == nullptr ? std::string()
-                                             : std::string( ",\"head_basis\":\"" ) + basis.headBasis + "\"";
+            const std::string headBasisJson = ( basis.headBasis == nullptr ? std::string()
+                                              : std::string( ",\"head_basis\":\"" ) + basis.headBasis + "\"" )
+                                            + ( basis.declinedCallExcluded == 0 ? std::string()   // the XML twin's declined-call-excluded=, absent at zero
+                                              : ",\"declined-call-excluded\":" + std::to_string( basis.declinedCallExcluded ) );
             rw::emitTo( stdout, "{{\"baseline\":\"{}\",\"regressions\":{},\"minor\":{},\"acked\":{},\"stale\":{},"
                          "\"preexisting-worse\":{},\"new-symbol\":{},\"gating\":{},\"register-macro-excluded\":{},\"api-new-surface\":{},\"at\":{}{}{}{}{}{}{},\"r\":[",
                          jsonStr( baseMarkerJ ).c_str(), regs.size(), minorCount, ackedCount, staleAcks.size(),
@@ -1553,7 +1590,7 @@ std::optional<int> runQualityDelta( const MainDispatch& d )
         emitQualityDeltaLegend( { baseSel.marker, refPair, identityAttrs, !saRows.empty(), ackedCount > 0,
                                   basis.registerMacroExcluded > 0, configDiag.total() > 0, regs, outOfScope,
                                   scope.active() || !foreignAcks.empty(), !foreignAcks.empty(), baselineAbsorbed,
-                                  basis.headBasis } );
+                                  basis.headBasis, basis.declinedCallExcluded > 0 } );
         const char* baseMarker = baseSel.marker;    // R3: ditto — one seam decides staleness AND names it
         // 2026-09-06: what the sidecar readers skipped, on the root (absent means none) — see kQdBaseHeadUnreadable
         std::string sidecarHealthAttrs;
@@ -1562,6 +1599,7 @@ std::optional<int> runQualityDelta( const MainDispatch& d )
         // #228: present-only, and its absence is the ordinary archived HEAD tree — the floor every git-HEAD
         // marker named on its own before this attribute existed.
         if( basis.headBasis != nullptr )  { sidecarHealthAttrs += std::string( " head_basis=\"" ) + basis.headBasis + "\""; }
+        if( basis.declinedCallExcluded > 0 ) { sidecarHealthAttrs += " declined-call-excluded=\"" + std::to_string( basis.declinedCallExcluded ) + "\""; }
         // at= anchors this regression list to the commit (+dirty state) it was computed against.
         rw::emitTo( stdout, "<quality-delta baseline=\"{}\" regressions=\"{}\" minor=\"{}\" acked=\"{}\" stale=\"{}\" preexisting-worse=\"{}\" new-symbol=\"{}\" gating=\"{}\" register-macro-excluded=\"{}\" api-new-surface=\"{}\"{}{}{}{}{}{}{}>",
                      baseMarker, regs.size(), minorCount, ackedCount, staleAcks.size(), preexistingCount, newSymbolCount, gatingCount, basis.registerMacroExcluded, basis.apiNewSurface,
@@ -1818,10 +1856,11 @@ std::optional<int> runQualityViews( const MainDispatch& d )
     std::vector<char>  qvRootEsc;
     const std::string  qvRootAttr   = qvSingleRoot ? ( " root=\"" + std::string( escapeXml( cfg.roots[0], qvRootEsc ) ) + "\"" ) : std::string();
 
-    // --readability: the Posnett/Hindle/Devanbu (MSR 2011) closed-form lens, per function, LARGEST volume
-    // first, a size proxy (readability.h owns the measurement AND its emission, the way --handoff owns its packet). It
-    // reads only the symbol table and the files on disk, so it needs neither the graph nor git — and it is
-    // a LENS: exit 0 always, no verdict, no threshold.
+    // --biggest-first (was --readability): the Posnett/Hindle/Devanbu (MSR 2011) closed-form lens, per
+    // function, LARGEST Halstead volume/token-count/length first — a size proxy, not a readability order
+    // (the ordering claim is WITHDRAWN, docs/EVALS.md §8; readability.h owns the measurement AND its
+    // emission, the way --handoff owns its packet). It reads only the symbol table and the files on
+    // disk, so it needs neither the graph nor git — and it is a LENS: exit 0 always, no verdict, no threshold.
     if( cfg.readability )
     {
         return writeReadabilityReport( ing, cfg.pageLimit, cfg.pageOffset, qvRootPrefix, qvRootAttr );
@@ -1829,7 +1868,7 @@ std::optional<int> runQualityViews( const MainDispatch& d )
 
     // --comment-coherence: two published content measures per documented function/method (Steidl c_coeff
     // + Scalabrino CIC) — commentcoherence.h owns the measurement AND its emission, the same shape as
-    // --readability. Symbol table + files on disk only; no graph, no git; a LENS: exit 0 always.
+    // --biggest-first. Symbol table + files on disk only; no graph, no git; a LENS: exit 0 always.
     if( cfg.commentCoherence )
     {
         return writeCommentCoherenceReport( ing, cfg.pageLimit, cfg.pageOffset, qvRootPrefix, qvRootAttr );
@@ -1837,8 +1876,8 @@ std::optional<int> runQualityViews( const MainDispatch& d )
 
     // --nonlocal-state: per function, the non-local MUTABLE state it or its transitive callees reach, reads
     // and writes kept apart (nonlocalstate.h owns the discovery, the closure AND its emission, the way
-    // --readability does). It needs the symbol table, the value-use references and the call graph — but no
-    // git — and it is a LENS: exit 0 always, no verdict, no threshold, every count a disclosed floor.
+    // --biggest-first does). It needs the symbol table, the value-use references and the call graph — but
+    // no git — and it is a LENS: exit 0 always, no verdict, no threshold, every count a disclosed floor.
     if( cfg.nonlocalState )
     {
         return nonlocal::writeNonLocalStateReport( ing, g, cfg.pageLimit, cfg.pageOffset, qvRootPrefix, qvRootAttr );
@@ -1850,7 +1889,7 @@ std::optional<int> runQualityViews( const MainDispatch& d )
     }
 
     // --naming-calibration: §9.5 — the naming-* lint rules judged against the repo's OWN rename history
-    // (renamemine.h owns the mining, the join, the scoring AND the emission, the way --readability does).
+    // (renamemine.h owns the mining, the join, the scoring AND the emission, the way --biggest-first does).
     // It walks git and reads the symbol table; it needs no graph. Exit 0 always — a measurement, not a
     // verdict: test/namingcalibrationcheck.sh is where the per-rule floor lives.
     if( cfg.namingCalibration )

@@ -93,10 +93,18 @@ has not been verified against a real install yet. If you use one, the help-wante
 [#69 (Hermes)](https://github.com/redhat-et/ripwire/issues/69) and
 [#68 (openclaw)](https://github.com/redhat-et/ripwire/issues/68) ask for exactly that check.
 
-The skills are symlinks named `ripwire-*`. Re-running the installer is safe: it refreshes the links and
-removes any that a newer release no longer ships. openclaw reads `~/.agents/skills` only while its state
-directory is the default `~/.openclaw`. Add `--contributor` to also activate the skill for building ripwire
-itself.
+The skills are symlinks named `ripwire-*` — a copy instead, marked as the installer's own, when a symlink
+can't be made (e.g. Windows without Developer Mode). Re-running the installer is safe: it refreshes the
+links and copies it manages and removes any that a newer release no longer ships, but it only ever
+replaces a real directory it can prove is its own; a real `ripwire-*` directory it did not create (yours)
+is left untouched, with a one-line note, and is never counted as installed. A copied skill is ours; edit
+your own copy under a different name. openclaw reads `~/.agents/skills` only while its state directory is
+the default `~/.openclaw`. Add `--contributor` to also activate the skill for building ripwire itself.
+
+On Windows (the release zip), run the installer in the unzipped folder from a Git Bash window, or from PowerShell by
+Git Bash's full path:
+`& "C:\Program Files\Git\bin\bash.exe" skills/install.sh`. A bare `bash` there is often WSL's
+(`C:\Windows\System32\bash.exe`), which installs into the WSL home, where Windows agents never look.
 
 ### Advisory hooks (optional)
 
@@ -136,14 +144,26 @@ rm -f ~/.local/bin/ripwire
 rm -rf ~/.local/share/ripwire
 ```
 
-**2. Skill links.** This deletes only symlinks named `ripwire-*`, never a real directory or another skill.
+**2. Skills.** This deletes symlinks named `ripwire-*`, the `ripwire-*` copies the installer made where a symlink
+could not be (their `.ripwire-installed-copy` marker names the directory itself, the installer's own ownership rule),
+`ripwire-*` directories that hold no files at any depth (what a symlink that did not take leaves behind, which the
+installer also counts as its own), and its manifest. It never deletes another skill, or a `ripwire-*` directory that
+holds a file but not that marker, such as your own. A directory `find` cannot fully read is kept.
 
 ```bash
 for d in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills" "${AGENTS_HOME:-$HOME/.agents}/skills" \
          "$HOME/.agents/skills" "${CODEX_HOME:-$HOME/.codex}/skills" "${HERMES_HOME:-$HOME/.hermes}/skills"; do
-  [ -d "$d" ] && find "$d" -maxdepth 1 -name 'ripwire-*' -type l -delete
+  [ -d "$d" ] || continue
+  find "$d" -maxdepth 1 -name 'ripwire-*' -type l -delete
+  find "$d" -mindepth 1 -maxdepth 1 -name 'ripwire-*' -type d -exec sh -c \
+    'm="$1/.ripwire-installed-copy"; [ -f "$m" ] && [ "$(cat "$m")" = "${1##*/}" ] && rm -rf "$1"' sh {} \;
+  find "$d" -mindepth 1 -maxdepth 1 -name 'ripwire-*' -type d -exec sh -c \
+    'f="$(find "$1" ! -type d)" && [ -z "$f" ] && rm -rf "$1"' sh {} \;
+  rm -f "$d/.ripwire-manifest-v1"
 done
 ```
+
+A skill you copied by hand carries no marker, so this keeps it; delete that copy yourself.
 
 **3. Hooks** (only if you ran `--hook`). This removes ripwire's entries from Claude Code's `settings.json` and
 Codex's `hooks.json`, keeps every other hook, and saves a `.bak` copy of each file first.
@@ -178,7 +198,10 @@ rmdir "$h" 2>/dev/null || true
 `.windsurfrules` or `~/.openclaw/workspace/AGENTS.md`, delete that block.
 
 **6. The cache.** ripwire keeps its index cache, and any repositories it cloned, in one private directory:
-`$TMPDIR/ripwire`, else `$XDG_CACHE_HOME/ripwire`, else `/tmp/ripwire-<uid>`. Remove all three candidates:
+`$TMPDIR/ripwire`, else `$XDG_CACHE_HOME/ripwire`, else `/tmp/ripwire-<uid>`. Each tree's blobs are named for the
+tree and for the cache format of the ripwire that wrote them (`ripwire-<key>-lean-c<format>p<parser>.bin`), so two
+installed versions with different cache formats keep separate blobs. The directory is capped at 2 GiB, and blobs untouched for 30 days are deleted on
+the next cache write. Remove all three candidates:
 
 ```bash
 [ -n "${TMPDIR:-}" ] && rm -rf "${TMPDIR%/}/ripwire"

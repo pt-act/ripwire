@@ -367,6 +367,127 @@ TEST_CASE( "rebaseMsysTmp: Git for Windows' /tmp is the user's temp directory; n
     CHECK( rebaseMsysTmp( "/tmp/x", "" ).empty() );
 }
 
+// #326: the dispatch NativePath makes at every os_win32.cpp syscall — which of rebaseMsysTmp / rebaseDevNull (if
+// either) applies to a program path — extracted to oswin::rebasedProgramPath so a caller outside os_win32.cpp
+// (os::rebased_path, for a consumer like std::filesystem or a bare std::fopen that performs no rebase of its own)
+// can ask the same question. ORACLE: reimplemented here independently (manual prefix dispatch, not a call into the
+// function under test) against the exact bug this seam exists for — --doctor's cache-dir probe measuring
+// "/tmp/ripwire-<uid>" via std::fopen/std::filesystem, which on Windows resolves against the CURRENT DRIVE rather
+// than the real, os::mkdir-created cache directory os_win32.cpp's NativePath rebases every os:: call onto.
+TEST_CASE( "rebasedProgramPath: routes exactly like NativePath's own dispatch, for a non-os:: caller" )
+{
+    const std::string nativeTmp = "C:\\Users\\x\\AppData\\Local\\Temp\\";
+    const auto        oracle    = [ & ]( std::string_view path ) -> std::string
+    {
+        if( path.empty() || path.front() != '/' ) { return {}; }
+        if( path.substr( 0, 4 ) == "/tmp" ) { return rebaseMsysTmp( path, nativeTmp ); }
+        if( path.substr( 0, 9 ) == "/dev/null" ) { return rebaseDevNull( path ); }
+        return {};
+    };
+
+    // the exact repro from the issue: cacheDirLadder()'s third-tier literal for uid 1001.
+    const std::string doctorCacheDir = "/tmp/ripwire-1001";
+    CHECK( rebasedProgramPath( doctorCacheDir, nativeTmp ) == oracle( doctorCacheDir ) );
+    CHECK( rebasedProgramPath( doctorCacheDir, nativeTmp ) == "C:/Users/x/AppData/Local/Temp/ripwire-1001" );
+
+    // the sentinel cacheDirLadder() returns when the ladder itself judged the directory unsafe/unusable — must
+    // still fail closed (a '|' byte, never a real openable Windows path), same as calling rebaseDevNull directly.
+    const std::string unusableCacheDir = "/dev/null/ripwire-cache-unavailable";
+    CHECK( rebasedProgramPath( unusableCacheDir, nativeTmp ) == oracle( unusableCacheDir ) );
+    CHECK( rebasedProgramPath( unusableCacheDir, nativeTmp ).find( '|' ) != std::string::npos );
+
+    // an already-native or unrelated absolute path: no rebase applies, dispatch answers empty (the caller's
+    // contract, matching NativePath, is "empty means use `path` itself unchanged").
+    CHECK( rebasedProgramPath( "C:/Users/x/project", nativeTmp ) == oracle( "C:/Users/x/project" ) );
+    CHECK( rebasedProgramPath( "C:/Users/x/project", nativeTmp ).empty() );
+    CHECK( rebasedProgramPath( "/home/x/project", nativeTmp ) == oracle( "/home/x/project" ) );
+    CHECK( rebasedProgramPath( "/home/x/project", nativeTmp ).empty() );
+
+    // relative and empty input: never crashes, never fabricates an absolute answer.
+    CHECK( rebasedProgramPath( "", nativeTmp ).empty() );
+    CHECK( rebasedProgramPath( "tmp/x", nativeTmp ).empty() );
+
+    // GetTempPathW itself failed (userTempDirectory() empty): degrades to "no rebase" rather than a garbage path —
+    // the caller (os::rebased_path) then falls back to the ORIGINAL spelling, same failure shape as before #326,
+    // not a crash or a fabricated location.
+    CHECK( rebasedProgramPath( doctorCacheDir, "" ).empty() );
+}
+
+// #326 structural follow-up: cacheDirLadder() (src/quality.h) itself now calls os::rebased_path on its return
+// value, so EVERY consumer in the tree (resolveCacheBlobPath, evictOldCacheFamily, slicediff.h/editpreview.h's
+// temp roots, crossref.h, ingest_docpass.h, main.cpp's clone cache — see that function's own comment for the
+// full list) is correct by construction, not just --doctor. This case exercises rebasedProgramPath against the
+// EXACT three shapes cacheDirLadder's three tiers can hand it, so a change to either function is caught here
+// regardless of which one actually changed. It is not a NEW dispatch rule — rebasedProgramPath's prefix-only
+// routing already covers every one of these inputs generically (proved by the previous test case) — so, unlike
+// that case, these assertions do not fail to compile on 8a2d9ce1: rebasedProgramPath itself is unchanged since
+// that commit. What changed is an ADDITIONAL, new CALL SITE (cacheDirLadder(), in a different translation
+// unit this seam cannot link against — it takes os::mkdir/os::getenv, which is exactly what os_win32_logic.h
+// exists to stay free of). That change is proven instead by: (a) reading the diff — cacheDirLadder() at
+// src/quality.h now ends every return path through os::rebased_path; (b) the extended Windows CI step, which
+// is genuinely red on unfixed code and green after, on the one platform where the two spellings differ.
+TEST_CASE( "rebasedProgramPath: the exact shapes quality.h::cacheDirLadder's three tiers produce" )
+{
+    const std::string nativeTmp = "C:\\Users\\x\\AppData\\Local\\Temp\\";
+
+    // tier 3 (neither TMPDIR nor XDG_CACHE_HOME set): the hardcoded fallback literal — must rebase.
+    CHECK( rebasedProgramPath( "/tmp/ripwire-1001", nativeTmp ) == "C:/Users/x/AppData/Local/Temp/ripwire-1001" );
+
+    // tier 1 (TMPDIR set): os::init_process already normalises TMPDIR into the program's spelling at intake
+    // (CONTRIBUTING.md §3, "Windows spells them once where they enter"), so the ordinary case is an
+    // already-native path the ladder appends "/ripwire" to — no rebase applies, identity.
+    CHECK( rebasedProgramPath( "C:/Users/x/AppData/Local/Temp/ripwire", nativeTmp ).empty() );
+
+    // tier 1, the edge case: nothing stops a user (or Git Bash's own default environment) from setting
+    // TMPDIR=/tmp verbatim. cacheDirLadder() rebases UNCONDITIONALLY on its return value, regardless of which
+    // tier produced the string — so this tier-1 output is rebased exactly like tier 3's, uniformly, rather
+    // than only the hardcoded fallback literal receiving special treatment.
+    CHECK( rebasedProgramPath( "/tmp/ripwire", nativeTmp ) == "C:/Users/x/AppData/Local/Temp/ripwire" );
+
+    // tier 2 (XDG_CACHE_HOME set): same as tier 1's ordinary case — an already-native path, identity.
+    CHECK( rebasedProgramPath( "D:/CacheRoot/ripwire", nativeTmp ).empty() );
+
+    // the ladder's own fail-closed sentinel, in full: rebases to the unusable '|' spelling, never silently
+    // "worked" by accident the way a bare drive-relative "/dev/null/..." would on some machines.
+    const std::string sentinel = rebasedProgramPath( "/dev/null/ripwire-cache-unavailable", nativeTmp );
+    CHECK( sentinel.find( '|' ) != std::string::npos );
+    CHECK( sentinel.find( "ripwire-cache-unavailable" ) != std::string::npos );
+}
+
+// #326's sibling (the cache-eviction sweep): cacheDirLadder() now resolves its own spelling ONCE through this
+// dispatch, on every value it returns, so std::filesystem and os:: consumers read the same bytes. Every
+// os:: call the ladder and its callers then make hands that ALREADY-RESOLVED answer back through NativePath — i.e.
+// through this same dispatch a second time. The fix is only correct if that second pass is a no-op on every answer the
+// first can give: a drive-lettered temp path, an already-native TMPDIR tier, and the fail-closed sentinel. The oracle
+// is the contract itself ("empty means use `path` verbatim"), asserted on the dispatch's own outputs.
+TEST_CASE( "rebasedProgramPath: idempotent — an os:: caller handed an already-resolved cacheDirLadder() answer sees no second rewrite" )
+{
+    const std::string nativeTmp = "D:\\Temp\\";
+
+    // third tier, the one a plain cmd.exe/PowerShell user lands on (neither TMPDIR nor XDG_CACHE_HOME is set there):
+    // resolved once to the real temp directory, and that answer routes to "no rebase" when it comes back around.
+    const std::string once = rebasedProgramPath( "/tmp/ripwire-1001", nativeTmp );
+    CHECK( once == "D:/Temp/ripwire-1001" );
+    CHECK( rebasedProgramPath( once, nativeTmp ).empty() );
+    CHECK( rebasedProgramPath( once + "/ripwire-deadbeef0000aaaa-lean.bin", nativeTmp ).empty() );   // a blob under it: same
+    CHECK( rebasedProgramPath( once + "/locks", nativeTmp ).empty() );                                // the edit-lock subtree: same
+
+    // the ladder promises NO trailing slash (every caller appends "/<name>"): the rebase keeps that promise even
+    // when the native temp directory is spelled with one or several trailing separators, as GetTempPathW returns it.
+    CHECK( once.back() != '/' );
+    CHECK( rebasedProgramPath( "/tmp/ripwire-1001", "D:\\Temp\\\\" ) == "D:/Temp/ripwire-1001" );
+    CHECK( rebasedProgramPath( "/tmp/ripwire-1001", "D:\\Temp" ) == "D:/Temp/ripwire-1001" );
+
+    // first tier: a TMPDIR os::init_process already put in the program's spelling — no rewrite on either pass.
+    CHECK( rebasedProgramPath( "D:/Temp/ripwire", nativeTmp ).empty() );
+
+    // the fail-closed sentinel: rebasing it once yields the unopenable "|unusable|..." spelling; rebasing THAT
+    // again must not turn it into anything openable (it still does not start with '/', so: no rewrite).
+    const std::string sentinelOnce = rebasedProgramPath( "/dev/null/ripwire-cache-unavailable", nativeTmp );
+    CHECK( sentinelOnce.rfind( "|unusable|", 0 ) == 0 );
+    CHECK( rebasedProgramPath( sentinelOnce, nativeTmp ).empty() );
+}
+
 TEST_CASE( "extendedLengthPath: only an absolute, clean path gets the \\\\?\\ prefix" )
 {
     CHECK( extendedLengthPath( u"C:\\Users\\x\\Temp\\" ) == u"\\\\?\\C:\\Users\\x\\Temp\\" );
@@ -686,6 +807,41 @@ TEST_CASE( "shell: only an absolute, non-WSL bash is acceptable" )
     CHECK( !isAcceptableShell( "C:bash.exe" ) );                                                   // drive-relative
 }
 
+TEST_CASE( "doctor PATH remedy: PowerShell's assignment, native separators, never a POSIX export line (#334)" )
+{
+    const std::string h = powerShellPathPrependHint( "C:/Program Files/ripwire tools/ripwire-0.6.4-windows-x64" );
+    CHECK( h.starts_with( "$env:Path = 'C:\\Program Files\\ripwire tools\\ripwire-0.6.4-windows-x64;' + $env:Path" ) );
+    CHECK( h.find( "export PATH" ) == std::string::npos );
+    CHECK( h.find( '/' ) == std::string::npos );
+    CHECK( h.ends_with( " + $env:Path" ) );   // the command ONLY: guidance after it made a complete paste fail (CodeRabbit 4109273959)
+    CHECK( kPowerShellPathPrependScope.find( "user Path" ) != std::string_view::npos );
+    CHECK( powerShellPathPrependHint( "//server/share/bin" ).starts_with( "$env:Path = '\\\\server\\share\\bin;' + $env:Path" ) );   // UNC
+}
+
+// CodeRabbit 4109273959: an unquoted (or double-quoted) directory pasted into PowerShell would let a `$`, a
+// backtick or `$(...)` inside it expand or run. Single-quoting makes it a literal — asserted byte for byte,
+// rather than trusting that "looks quoted" is "is safe".
+TEST_CASE( "doctor PATH remedy: a directory with $, a backtick, a quote and a space stays a literal" )
+{
+    const std::string h = powerShellPathPrependHint( "C:/tools/$env:UserProfile `whoami` it'is weird/bin" );
+    // '/' -> '\\', then the whole (dir + ";") is single-quoted; an embedded ' doubles to ''.
+    CHECK( h == "$env:Path = 'C:\\tools\\$env:UserProfile `whoami` it''is weird\\bin;' + $env:Path" );
+}
+
+// PowerShell's tokenizer also closes a single-quoted literal on the typographic quotes U+2018..U+201B, so a directory
+// named with one (a curly apostrophe, as in O’Brien) must have it doubled like the ASCII quote, or the rest of the name
+// runs as code when the hint is pasted.
+TEST_CASE( "doctor PATH remedy: PowerShell's typographic single quotes are doubled too" )
+{
+    CHECK( powerShellPathPrependHint( "C:/O\xE2\x80\x99" "Brien/bin" )
+           == "$env:Path = 'C:\\O\xE2\x80\x99\xE2\x80\x99" "Brien\\bin;' + $env:Path" );
+    CHECK( powerShellSingleQuote( "\xE2\x80\x98|\xE2\x80\x9A|\xE2\x80\x9B" )
+           == "'\xE2\x80\x98\xE2\x80\x98|\xE2\x80\x9A\xE2\x80\x9A|\xE2\x80\x9B\xE2\x80\x9B'" );
+    // neighbours of the range, and a truncated sequence at the end, are not quotes and pass through once
+    CHECK( powerShellSingleQuote( "\xE2\x80\x97\xE2\x80\x9C\xE2\x80" ) == "'\xE2\x80\x97\xE2\x80\x9C\xE2\x80'" );
+    CHECK( powerShellSingleQuote( "it's" ) == "'it''s'" );
+}
+
 TEST_CASE( "executables: extension detection and PATHEXT membership" )
 {
     CHECK( hasExtension( "tool.exe" ) );
@@ -702,6 +858,78 @@ TEST_CASE( "executables: extension detection and PATHEXT membership" )
     CHECK( !extensionInList( "ripwire", pathext ) );
     CHECK( !extensionInList( "a.exe", "" ) );
     CHECK( extensionInList( "a.exe", ";;.exe;" ) );
+}
+
+// #334, @elsRobin's Windows 10 re-check of --doctor's binary-path row. The row used Git Bash's `which`, run in a child
+// shell: its answer was a "/c/..." path, taken from that shell's PATH order, not the order where.exe and PowerShell
+// use. So the row named ~/bin's copy while PowerShell ran the 0.6.4 install. The row now asks os::which, whose search
+// is this function. A fake NTFS answers isFile: files are listed, a lookup ignores case, and directories are not files.
+namespace fakentfs
+{
+struct Volume
+{
+    std::vector<std::string> files;
+    std::vector<std::string> directories;
+    bool operator()( const std::string& path ) const
+    {
+        const auto named = [ &path ]( const std::string& entry ) { return equalsAsciiCaseless( entry, path ); };
+        return std::none_of( directories.begin(), directories.end(), named ) && std::any_of( files.begin(), files.end(), named );
+    }
+};
+}   // namespace fakentfs
+
+TEST_CASE( "program search (#334): PATH order decides, as where.exe and PowerShell read it" )
+{
+    const std::string_view pathext = ".COM;.EXE;.BAT;.CMD";
+    const fakentfs::Volume both { { "D:/Apps/ripwire-0.6.4-windows-x64/ripwire.exe",
+                                    "D:/me/bin/ripwire.exe" }, {} };
+    // scenario 3: the 0.6.4 directory first on the user Path -> the 0.6.4 exe, never ~/bin's
+    CHECK( searchProgramPath( "ripwire", "D:\\Apps\\ripwire-0.6.4-windows-x64;D:\\me\\bin", pathext, both )
+           == "D:/Apps/ripwire-0.6.4-windows-x64/ripwire.EXE" );
+    // scenario 1: the other order -> ~/bin's copy, which the row then compares (and names STALE only on evidence)
+    CHECK( searchProgramPath( "ripwire", "D:\\me\\bin;D:\\Apps\\ripwire-0.6.4-windows-x64", pathext, both )
+           == "D:/me/bin/ripwire.EXE" );
+    // scenario 3c: the 0.6.4 directory the only one holding a ripwire -> found, whatever else PATH holds
+    const fakentfs::Volume alone { { "D:/Apps/ripwire-0.6.4-windows-x64/ripwire.exe" }, {} };
+    CHECK( searchProgramPath( "ripwire", "C:\\Windows\\system32;D:\\me\\bin;D:/Apps/ripwire-0.6.4-windows-x64/", pathext, alone )
+           == "D:/Apps/ripwire-0.6.4-windows-x64/ripwire.EXE" );
+    CHECK( searchProgramPath( "ripwire", "C:\\Windows\\system32;D:\\me\\bin", pathext, alone ).empty() );
+}
+
+TEST_CASE( "program search (#334): the answer is a path the path layer opens, never Git Bash's /c/ spelling" )
+{
+    const fakentfs::Volume v { { "D:/a/_temp/rw test dir/pkg/ripwire.exe", "C:/msys/ripwire.exe" }, {} };
+    const std::string found = searchProgramPath( "ripwire", "d:\\a\\_temp\\rw test dir\\pkg\\", ".EXE", v );
+    CHECK( found == "D:/a/_temp/rw test dir/pkg/ripwire.EXE" );
+    CHECK( isAbsoluteNativePath( found ) );
+    CHECK( found.find( '\\' ) == std::string::npos );
+    // a "/c/..." entry is not a Windows path: CreateProcess cannot use it, so it is not searched either
+    CHECK( searchProgramPath( "ripwire", "/c/msys", ".EXE", v ).empty() );
+}
+
+TEST_CASE( "program search: PATHEXT, relative entries, directories, and an explicit path" )
+{
+    const std::string_view pathext = ".COM;.EXE;.BAT;.CMD";
+    // an extensionless POSIX script is not a Windows program; the next directory's .cmd is (CI's fake older ripwire)
+    const fakentfs::Volume fake { { "C:/fake/ripwire", "C:/older/ripwire.cmd", "C:/real/ripwire.exe" }, {} };
+    CHECK( searchProgramPath( "ripwire", "C:\\fake;C:\\older;C:\\real", pathext, fake ) == "C:/older/ripwire.CMD" );
+    // within one directory PATHEXT's order decides: .EXE before .CMD
+    const fakentfs::Volume twoKinds { { "C:/bin/ripwire.cmd", "C:/bin/ripwire.exe" }, {} };
+    CHECK( searchProgramPath( "ripwire", "C:\\bin", pathext, twoKinds ) == "C:/bin/ripwire.EXE" );
+    // empty and relative entries are skipped even when they would answer (a checkout's own copy must not)
+    const fakentfs::Volume rel { { "./ripwire.exe", "bin/ripwire.exe", "C:/ok/ripwire.exe" }, {} };
+    CHECK( searchProgramPath( "ripwire", ";.;bin;C:\\ok", pathext, rel ) == "C:/ok/ripwire.EXE" );
+    // a directory named like the program is not the program
+    const fakentfs::Volume dir { { "C:/b/ripwire.exe" }, { "C:/a/ripwire.exe" } };
+    CHECK( searchProgramPath( "ripwire", "C:\\a;C:\\b", pathext, dir ) == "C:/b/ripwire.EXE" );
+    // a name with an extension is used only when PATHEXT lists it; an empty PATHEXT means Windows' default
+    CHECK( searchProgramPath( "ripwire.exe", "C:\\b", pathext, dir ) == "C:/b/ripwire.exe" );
+    CHECK( searchProgramPath( "ripwire.exe", "C:\\b", "", dir ) == "C:/b/ripwire.exe" );
+    CHECK( searchProgramPath( "ripwire.py", "C:\\b", pathext, fakentfs::Volume { { "C:/b/ripwire.py" }, {} } ).empty() );
+    // a command naming a path is resolved alone, PATH not consulted
+    CHECK( searchProgramPath( "c:\\b\\ripwire", "C:\\a", pathext, dir ) == "C:/b/ripwire.EXE" );
+    CHECK( searchProgramPath( "", "C:\\b", pathext, dir ).empty() );
+    CHECK( searchProgramPath( std::string_view( "rip\0wire", 8 ), "C:\\b", pathext, dir ).empty() );
 }
 
 TEST_CASE( "shell: PATH entries split on ';', keep empties for the caller to skip, and unquote" )

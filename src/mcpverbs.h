@@ -447,7 +447,7 @@ inline std::string analyzeToString( const std::string& root, int topK, bool stab
                                     // this one must too — "the clause landed at 3 of its 5 echo sites" is the
                                     // §B4 family, and mcpclidiffcheck is the gate that keeps the two surfaces one.
                                     /*ann=*/rw::MapAnnotations{ .prDisclosure = ix.prDisclosure },
-                                    /*statsFirstScreen=*/true, anRootArg, &ix.g.locPinOut, ix.g.externalCalls, &ix.g.declinedOut ); } );
+                                    /*statsFirstScreen=*/true, anRootArg, &ix.g.locPinOut, ix.g.externalCalls, &ix.g.declinedOut, ix.g.gateDeclinedCalls ); } );
 }
 
 // `rank_by` verb (lane/t10-mcp-coverage): the MCP twin of --rank-by=pagerank|authority|hub|rrf — the SAME
@@ -514,7 +514,7 @@ inline std::string rankByText( const std::string& root, std::string_view mode, i
                                     /*autoOrder=*/false, /*outEstTokens=*/nullptr,
                                     /*extraPayloadTokens=*/0,
                                     /*ann=*/rw::MapAnnotations{ .rankByLabel = rankByLabel, .prDisclosure = disclosure },
-                                    /*statsFirstScreen=*/true, rbRootArg, &ix.g.locPinOut, ix.g.externalCalls, &ix.g.declinedOut ); } );
+                                    /*statsFirstScreen=*/true, rbRootArg, &ix.g.locPinOut, ix.g.externalCalls, &ix.g.declinedOut, ix.g.gateDeclinedCalls ); } );
 }
 
 // ─── the cross-branch + dark-content MCP twins (`whereis`, `stray_content`, `flags`) ───
@@ -633,6 +633,30 @@ inline std::string docDriftText( const std::string& root, const std::string& fil
     const McpIndex& ix = getIndex( root );
     const docdrift::DriftResult res = docdrift::computeDocDrift( ix.ing, root, {}, filter );
     return captureXml( [ & ]( std::FILE* f ) { docdrift::writeDocDriftPage( f, res, maxPerDoc, /*gateability=*/false, page.limit, page.offset ); } );
+}
+
+// cut-fix C: find_symbol's calledBy array is a SECONDARY listing (pageview.h rule 6), windowed by the same
+// limit/offset as `calls`, and it was that payload's one SILENT cut — count= and the paging keys describe `calls`
+// only. Its own trio in the --impact import tier's spelling, plus the one call that fetches the rest (the CLI
+// --callers pages the same ranked order, callhierarchy.h). Empty on an uncut window: an uncut array is its own
+// total (THE TRUNCATION VOCABULARY rule 3's --skill-scan precedent), so an uncapped answer is byte-identical.
+inline std::string calledByCutJson( std::string_view name, std::size_t total, const PageWindow& window, int pageLimit )
+{
+    EXPECTS( window.begin <= window.end && window.end <= total, "the window is pageWindow()'s over this same array" );
+    const std::size_t shown = window.end - window.begin;
+    if( shown >= total )
+    {
+        return {};
+    }
+    std::string out = ",\"calledBy_total\":" + std::to_string( total ) + ",\"shown_calledBy\":" + std::to_string( shown )
+                    + ",\"calledBy_capped\":true";
+    if( window.end < total )
+    {
+        const std::string next = nextFlag( "--callers=", name ) + ( pageLimit > 0 ? " --limit=" + std::to_string( pageLimit ) : std::string() )
+                               + " --offset=" + std::to_string( window.end );
+        out += ",\"calledBy_next\":\"" + mcpdetail::jsonEscape( next ) + "\"";
+    }
+    return out;
 }
 
 // build ing+graph for `root`, resolve `name`, return a JSON object: the symbol + its callers
@@ -754,6 +778,10 @@ inline std::string symbolQueryJson( const std::string& root, const std::string& 
     out += unprovenDefsKeyJson( chRows.unprovenDefs );
     out += pageDisclosure( pab, sizeof( pab ), pwPrimary.end - pwPrimary.begin, rowTotal, pwPrimary.end,
                            page.limit, page.offset, discloseCap, kJsonPageSyntax );
+    if( !referencingOnly )
+    {
+        out += calledByCutJson( name, calledBy.size(), pwSecond, page.limit );   // cut-fix C: the second array's own cut
+    }
     out += ",\"calledBy\":" + rowArray( calledBy, referencingOnly ? pwPrimary : pwSecond );
     if( !referencingOnly )
     {
@@ -908,7 +936,8 @@ inline std::string grepTierKeys( const GrepTierReport& tier, bool floorAlreadyEm
     keys += ",\"tier_unclassified\":" + std::to_string( tier.unclassifiedHits );
     if( tier.budgetHit != nullptr )
     {
-        keys += std::string( ",\"tier_budget\":\"" ) + tier.budgetHit + "\"" + ( floorAlreadyEmitted ? "" : rw::kGraphCountFloorAttrJson );   // N2: the CLI twin's floor
+        keys += std::string( ",\"tier_budget\":\"" ) + tier.budgetHit + "\",\"tier_files\":" + std::to_string( tier.hitFileCount )
+              + ( floorAlreadyEmitted ? "" : rw::kGraphCountFloorAttrJson );   // N2: the CLI twin's floor; tier_files: the CLI twin's total
     }
     return keys;
 }
@@ -1582,12 +1611,15 @@ inline std::string mentionsJson( const std::string& root, const std::string& sym
     {
         out += "\"sym\":\"" + mcpdetail::jsonEscape( seedSym ) + "\","; // the @-seed's rebound definition name
     }
+    // cut-fix E: the 100-file default is this surface's alone (the CLI twin is uncapped) and it cut silently
+    // (discloseCap=false). It discloses exactly when the window cut, like `owners` below: path order is kept so
+    // offset= pages the CLI's own stream.
     const PageWindow mnPw = pageWindow( fileRows.size(), effectiveRowCap( page.limit, kUseSiteRowCap ), page.offset );
     char             mnPab[ kPageDisclosureCap ];
     out += "\"docs\":" + std::to_string( fileRows.size() )
          + ",\"sections\":" + std::to_string( docs.size() )
          + pageDisclosure( mnPab, sizeof( mnPab ), mnPw.end - mnPw.begin, fileRows.size(), mnPw.end,
-                           page.limit, page.offset, /*discloseCap=*/false, kJsonPageSyntax )
+                           page.limit, page.offset, /*discloseCap=*/mnPw.end - mnPw.begin < fileRows.size(), kJsonPageSyntax )
          + ",\"files\":[";
     bool first = true;
     for( std::size_t mnRowIndex = mnPw.begin; mnRowIndex < mnPw.end; ++mnRowIndex )
@@ -1746,6 +1778,7 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
     // the disclosure always has a route= to ride in.
     const queryshape::Verdict shape   = queryshape::classify( task );
     const std::vector<float>  tierMul = rankTierSymbolMultipliersShaped( ing, !noRoute && shape.fires() );
+    const std::vector<float>  docNoiseMul = !noRoute ? docNoiseSymbolMultipliers( ing, task ) : std::vector<float>{};   // the CLI twin's lift order
     // deep-tail: this bundle now serves the file-grain tail, a full-distribution consumer — the H2
     // MaxScore prune bound is 0 (exhaustive) here for the same reason the CLI --for passes
     // fullDistribution (a pruned tail would make total= mode-dependent and its order incomplete).
@@ -1835,7 +1868,7 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
     if( !std::getenv( "RIPWIRE_NO_DOC_MENTION" ) )
     {
         DocMentionBoostInfo docMentionInfo;
-        if( applyDocMentionBoost( ix.g, lensRank, &docMentionInfo ) )
+        if( applyDocMentionBoost( ix.g, lensRank, &docMentionInfo, docNoiseMul ) )
         {
             char nb[ 220 ];
             rw::formatTo( nb, sizeof( nb ), " [doc mentions: {} doc{} discussing {} top-ranked symbol{} surfaced; doc_mentions= on the root repeats the doc count]",
@@ -2108,6 +2141,7 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
     // never gets the attribute). Byte-for-byte the same content this call always produced.
     std::size_t mcpDroppedPositive = 0;
     bool        mcpSigsCapped      = false;   // did the H1 ladder trim <sigs>? — decides the budget_bytes= disclosure below
+    rw::SigsCutReport mcpSigsCut;             // cut-fix lane A: the <sigs> tag's cut readings, spliced below as the CLI twin does
     std::vector<rw::NodeId> mcpShownIds;   // lane 2: the sigs rows actually emitted — the tail excludes these files, not the whole surface
     std::string sigsStr = renderToString( [ & ]( std::FILE* m2 )
     {
@@ -2121,7 +2155,8 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
                         &mcpDroppedPositive,                  // A2: exact count, see droppedPositiveCount (serialize.h)
                         &mcpShownIds,                         // lane 2: see verbs_for.h shownSigIds
                         &mcpSigsCapped,                       // the ladder's own verdict — see the budget_bytes= splice below
-                        mcpTopRowNext );                      // L-W: the widening page on a thin answer, else the body
+                        mcpTopRowNext,                        // L-W: the widening page on a thin answer, else the body
+                        &mcpSigsCut );                        // cut-fix lane A: docs_dropped= / shrunk readings
     } );
     // A2: same insert-before-"-->" splice as the CLI twin (verbs_for.h) — absent entirely on the (overwhelming)
     // no-drop path, so headerStr's bytes are unchanged there (byte-identical to the pre-A2 output). Bare
@@ -2157,6 +2192,17 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
         if( closeAt != std::string::npos )
         {
             headerStr.insert( closeAt, rw::kForBudgetBytesNote );
+        }
+    }
+    // cut-fix lane A: the <sigs> tag's cut readings (docs_dropped=, shrunk-not-dropped) — the CLI twin's clauses, same
+    // text, same splice point, present only when the tag carries the case (serialize.h sigsCutLegendNotes).
+    if( const std::string cutNotes = rw::sigsCutLegendNotes( mcpSigsCut.isCapped, mcpSigsCut.shown, mcpSigsCut.total, mcpSigsCut.docsDropped );
+        !cutNotes.empty() )
+    {
+        const std::size_t closeAt = headerStr.rfind( " -->" );
+        if( closeAt != std::string::npos )
+        {
+            headerStr.insert( closeAt, cutNotes );
         }
     }
     // L3 follow-up (CodeRabbit 4053600616): same splice shape as dropped_positive=/budget_bytes= above — absent
@@ -2435,11 +2481,15 @@ inline std::optional<std::string> ownersText( const std::string& root, const std
     const std::string  owRootAttr   = owSingleRoot ? ( " root=\"" + std::string( rw::escapeXml( root, owRootEsc ) ) + "\"" ) : std::string();
     // M13: the same window the CLI --owners applies, over the SAME already-selected row list, so `limit`
     // and `offset` mean here exactly what they mean there.
+    // cut-fix E: the 40-row default is THIS surface's alone (the CLI twin prints every row), and it cut with
+    // discloseCap=false, so nothing said rows were dropped. discloseCap is now "the window cut": a cut answer
+    // carries shown=/capped="1"/total=/next_offset= (offset= fetches the rest), an uncut one stays byte-identical.
+    // Path order is kept, not ranked: it is the CLI's paging stream, and offset= must name the same rows there.
     const PageWindow owPw = pageWindow( printRows.size(), effectiveRowCap( page.limit, kCallHierarchyRowCap ), page.offset );
     char             owPab[ kPageDisclosureCap ];
     rw::emitTo( mem, "<owners files=\"{}\"{}{}{}{}>", ownerships.size(), owSymAttr.c_str(),
                   pageDisclosure( owPab, sizeof( owPab ), owPw.end - owPw.begin, printRows.size(), owPw.end,
-                                  page.limit, page.offset, /*discloseCap=*/false ),
+                                  page.limit, page.offset, /*discloseCap=*/owPw.end - owPw.begin < printRows.size() ),
                   owRootAttr.c_str(), gitstamp::atAttr( root ).c_str() );
     if( uniformCount > 0 )
     {
@@ -2614,11 +2664,17 @@ inline std::optional<std::string> impactText( const std::string& root, const std
     // exactly the §B4 echo-site divergence the shared-constant rule exists to stop.
     // LB-H: the import tier's clause rides here too — the CLI legend and this one are byte-identical by
     // rule, and an attribute the MCP root now carries has to be defined where the caller meets it.
-    rw::emitTo( mem, "{}{}. {}{}{}{}{}{}{}{}-->", kImpactLegendOpen, kPageRaiseCapClause, kImpactImportTierLegend,
+    // LB-H: ONE derivation, shared with the CLI arm (graph.h::impactImportTier) — mcpclidiffcheck compares
+    // the two surfaces' attribute sets, and an honesty marker that lands on one of them is the §B4 class.
+    // Measured before the legend (#220 part 1): its imports_unresolved= decides whether that clause rides.
+    ImportTier imports = impactImportTier( ing, seeds );
+    sizeImportTier( imports, page.limit, symbol );   // cut-fix C: limit sizes the tier, as on the CLI
+    rw::emitTo( mem, "{}{}. {}{}{}{}{}{}{}{}{}-->", kImpactLegendOpen, kPageRaiseCapClause, kImpactImportTierLegend,
+                  impactTsImportLegend( imports.importsUnresolved, imports.tsconfigUnread ).c_str(),   // #220: exactly when the root carries them, as on the CLI
                   kTestedRowLegend, kImpactTestedPartitionLegend,   // A6
                   kTestedLensBlindSpotLegend,                       // F-02: rides with the partition, byte-identical to the CLI twin
                   unprovenDefsVerbLegend( UnprovenDefsVerb::Impact, unprovenDefs > 0 ).c_str(),   // H1: exactly when the root carries unproven_defs=, as on the CLI
-                  declinedCallsLegend( declinedCalls > 0 ),         // exactly when the root carries declined_calls=, as on the CLI
+                  declinedCallsLegendWithGate( declinedCalls > 0, g.gateDeclinedCalls > 0 ),         // exactly when the root carries declined_calls=, as on the CLI
                   graphCountDisclosure( g.unindexedFiles > 0 ).c_str(), renderDisclosure( prD, DiscloseAs::LegendClause ).c_str() );
     // r27-emitters §P2.1: the listing is capped at 40 by rank. Without shown=/capped= a 40-row answer to
     // "is it safe to change X?" reads as the WHOLE blast radius when it can be 3% of it. Same attributes,
@@ -2634,9 +2690,6 @@ inline std::optional<std::string> impactText( const std::string& root, const std
     const bool         imSingleRoot = ing.realPaths.empty();
     const std::string  imRootPrefix = imSingleRoot ? sarif::rootPrefixOf( root ) : std::string();
     const std::string  imRootAttr   = imSingleRoot ? ( " root=\"" + ex( root ) + "\"" ) : std::string();
-    // LB-H: ONE derivation, shared with the CLI arm (graph.h::impactImportTier) — mcpclidiffcheck compares
-    // the two surfaces' attribute sets, and an honesty marker that lands on one of them is the §B4 class.
-    const ImportTier imports = impactImportTier( ing, seeds );
     rw::emitTo( mem, "<impact of=\"{}\" defs=\"{}\" reaches=\"{}\"{}{} radius_tested=\"{}\" radius_untested=\"{}\"{}{}{}{}{}{}>",
                   ex( symbol ).c_str(), seeds.size(), reach.size(), unprovenDefsAttrXml( unprovenDefs ).c_str(),   // H1: where the CLI root carries it
                   imports.xmlAttrs.c_str(), radiusTested, radiusUntested, declinedCallsAttrXml( declinedCalls ).c_str(), imRootAttr.c_str(),
@@ -2863,7 +2916,7 @@ inline std::optional<std::string> usesText( const std::string& root, const std::
         return renderFieldUses( ing, fields[ 0 ], FieldUsesArgs{ symbol, ing.realPaths.empty(), root, page.limit, page.offset, ix.g } );
     }
 
-    struct UseSite { std::uint32_t fileId; std::uint32_t line; RefRole role; std::string in; };
+    struct UseSite { std::uint32_t fileId; std::uint32_t line; RefRole role; std::string in; NodeId from; };   // from: rankUseSites' weight
     std::vector<UseSite> sites;
     const ElixirResolver elixirResolver( ing );
     // CLI parity (mcpclidiffcheck): the Elixir resolver path is gated on the selector's ELIXIR definitions —
@@ -2895,7 +2948,7 @@ inline std::optional<std::string> usesText( const std::string& root, const std::
             // R-R: same root the <u p=…> beside it strips, so in_id= and p= agree on the spelling
             in = canonicalIdForEmit( ing, fs, ing.realPaths.empty() ? std::string_view( root ) : std::string_view() );
         }
-        sites.push_back( { r.fileId, r.line, r.role, std::move( in ) } );
+        sites.push_back( { r.fileId, r.line, r.role, std::move( in ), r.fromSymbol } );
     }
     // LB-G (r10 §5): TIER before path and the CLI --uses' own default site cap. mcpclidiffcheck LENS 1
     // pins the two surfaces' root-attribute sets equal, so a cap on one and not the other is a divergence.
@@ -2909,6 +2962,7 @@ inline std::optional<std::string> usesText( const std::string& root, const std::
         if( a.role   != b.role ) {   return std::uint8_t( a.role ) < std::uint8_t( b.role );
 }
         return a.in < b.in; } );
+    rankUseSites( ing, ix.g, sites );   // cut-fix C: the CLI --uses order, shared — the cap drops the lightest sites
 
     const PageWindow  upw           = pageWindow( sites.size(), effectiveRowCap( page.limit, kUseSiteRowCap ), page.offset );
     const std::size_t upageRows     = upw.end - upw.begin;
@@ -3639,6 +3693,7 @@ struct QualityDeltaOutcome
     std::size_t                       ackedByRename    = 0;
     std::size_t                       ackedByContent   = 0;
     std::size_t                       registerMacroExcluded = 0;   // P2.2: the CLI's disclosed dead-code exemption count — see quality.h
+    std::size_t                       declinedCallExcluded  = 0;   // the CLI's declined-call-excluded= (absent at zero, as there)
     std::size_t                       apiNewSurface         = 0;   // Q-DIAL-4: the CLI's api-new-surface= count — see quality.h
     // #228: the CLI root's head_basis= twin — see quality::HeadBasis for the value vocabulary. Present-only in
     // the JSON, under the same absent-means-the-ordinary-archived-tree rule as the CLI, so mcpclidiffcheck's
@@ -3767,7 +3822,8 @@ inline QualityDeltaOutcome computeQualityDelta( const std::string& root )
     auto       acks = rw::quality::readAckRecords( qualityAcksPath( root ) );
     const auto heal = rw::quality::healIdentity( baseSel.snapshot, acks, ing, g, root, root, /*wantContentIds=*/false );
 
-    oc.regs       = rw::quality::computeDelta( ing, g, baseSel.snapshot, root, {}, rw::kDefaultMaxFileBytes, &oc.registerMacroExcluded, &oc.apiNewSurface );
+    oc.regs       = rw::quality::computeDelta( ing, g, baseSel.snapshot, root, {}, rw::kDefaultMaxFileBytes, &oc.registerMacroExcluded, &oc.apiNewSurface,
+                                               nullptr, &oc.declinedCallExcluded );
 
     // signal-to-noise round: honor the per-finding ack ratchet exactly like the CLI — the acks sidecar is
     // root-qualified (same SIDECAR LOCATION discipline as the baseline), suppression is reported via `acked`.
@@ -3845,6 +3901,7 @@ inline std::pair<std::string, std::string> qualityDeltaJson( const std::string& 
                     + ",\"register-macro-excluded\":" + std::to_string( oc.registerMacroExcluded )
                     // Q-DIAL-4 — same always-present rule, same mcpclidiffcheck key-set lens.
                     + ",\"api-new-surface\":" + std::to_string( oc.apiNewSurface )
+                    + ( oc.declinedCallExcluded == 0 ? std::string() : ",\"declined-call-excluded\":" + std::to_string( oc.declinedCallExcluded ) )
                     // R1 IDENTITY — the CLI root's identity disclosure, spelled in JSON. Present only when
                     // git could be read at all, exactly like the CLI arm (absent ≠ zero — see the legend).
                     + oc.identityJson
@@ -3983,6 +4040,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
     // mention anchor) as CLI --pack-task.
     const queryshape::Verdict shape   = queryshape::classify( task );
     const std::vector<float>  tierMul = rankTierSymbolMultipliersShaped( ing, !noRoute && shape.fires() );
+    const std::vector<float>  docNoiseMul = !noRoute ? docNoiseSymbolMultipliers( ing, task ) : std::vector<float>{};   // the CLI twin's lift order
     lr.rank      = ( rc.which == LexMode::NameExact ) ? lexicalScoresNameExactRanked( ing, task, &tierMul )
                                                        : lexicalScoresTiered( ing, g.outOff, g.outTargets, task, 0, &ifaceExact, &tierMul,
                                                                               0, 0, {}, &lr.evidence );
@@ -4053,7 +4111,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
     if( !std::getenv( "RIPWIRE_NO_DOC_MENTION" ) )
     {
         DocMentionBoostInfo docMentionInfo;
-        if( applyDocMentionBoost( g, lr.rank, &docMentionInfo ) )
+        if( applyDocMentionBoost( g, lr.rank, &docMentionInfo, docNoiseMul ) )
         {
             char nb[ 160 ];
             rw::formatTo( nb, sizeof( nb ), " [doc mentions: {} doc{} discussing {} top-ranked symbol{} surfaced]",

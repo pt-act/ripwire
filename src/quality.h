@@ -43,6 +43,7 @@
 #include <ctime>       // ::nanosleep — the lock's bounded 10 ms poll
 
 #include <algorithm>
+#include <array>        // OwnBuildBlobTails — one tagged tail per root-keyed family
 #include <atomic>       // the A5 process-once cache-sweep guard
 #include <cctype>       // std::isxdigit/std::isdigit — B10.2d churn-blame porcelain parsing
 #include <chrono>       // A5: the 30-day cache-blob age cutoff (evictOldCacheFamily)
@@ -790,6 +791,16 @@ inline bool isDeadCandidate( const IngestResult& ing, const Graph& g, NodeId i,
         return false; // P2.2: self-registers via a static initializer the call graph cannot see
     }
     return true;
+}
+
+// The dead-code kind's one exemption beyond isDeadCandidate: a call the builtin-method name gate DECLINED could have
+// meant this definition (graph.h BuiltinMethodGate, Graph::gateDeclinedTarget), so it is not provably uncalled — which
+// is what it was before the gate, when that call bound to it by name. Both dead-set readers (the snapshot and the
+// delta) apply it after isDeadCandidate, so a symbol it exempts is exactly one that would otherwise be dead, and the
+// delta counts those as declined-call-excluded=.
+inline bool declinedCallMayReach( const Graph& g, NodeId i ) noexcept
+{
+    return i < g.gateDeclinedTarget.size() && g.gateDeclinedTarget[ i ] != 0;
 }
 
 // ONE clone group of the CURRENT tree, reduced to the two facts an ack row can be healed from: the
@@ -1617,6 +1628,29 @@ inline ContentIdIndex contentIdsBySym( const IngestResult& ing, const Graph& g, 
 // /tmp/ripwire-<uid>, always mode 0700. Keeping our artifacts one level below TMPDIR is a performance
 // boundary as well as a security one: cache hygiene must never enumerate an unbounded shared TMPDIR full of
 // unrelated agent-session files. Returns the dir with NO trailing slash. Deterministic per (user, env).
+//
+// #326 (structural follow-up): the value RETURNED here is what EVERY consumer in the tree builds cache paths
+// from — resolveCacheBlobPath (the choke point nearly every blob path routes through), evictOldCacheFamily/
+// sweepStaleCacheBlobsOnce, slicediff.h/editpreview.h's temp parse roots, crossref.h's blob-batch listing,
+// ingest_docpass.h's doc-bridge cache, and main.cpp's remote-clone cache all take this string and either hand
+// it straight to os:: calls (already correctly rebased internally, no bug there) or to something OUTSIDE the
+// os:: layer — std::filesystem, a bare std::fopen — that is not. `--doctor`'s cache-dir check used to be the
+// one LOCAL fix (rebasing only its own copy of this string before use); rebasing HERE instead makes every one
+// of those consumers correct by construction, with none of them needing to know this ever mattered. os::
+// mkdir/lstat/chmod below still verify the PRE-rebase spelling (harmless either way — rebased_path is a no-op
+// on an already-native path, since NativePath's own dispatch only fires on a leading "/tmp" or "/dev/null"),
+// so the verification logic is unchanged; only the RETURN value is now the spelling every downstream reader
+// needs. Identity on POSIX (rebased_path is `return path;` there), and identity on Windows for the two
+// TMPDIR/XDG_CACHE_HOME tiers too UNLESS the value they hold is itself "/tmp"-shaped (a plausible real case:
+// Git Bash sets TMPDIR=/tmp) — rebasing unconditionally, regardless of which tier produced the string, is
+// what makes that case correct too, rather than special-casing only the hardcoded third tier.
+//
+// #334, THE WINDOWS LAST RUNG, RULED AND KEPT: the third tier's "/tmp" rebases to GetTempPathW, whose documented order
+// is TMP, TEMP, USERPROFILE, then the Windows directory. So with TMPDIR, TEMP and TMP all unset the cache lands in the
+// profile root (%USERPROFILE%\ripwire-<uid>), not %LOCALAPPDATA%. That is kept: it is what every Win32 program calls
+// "temp" in that environment, it is per-user, --doctor's cache-dir row discloses it, and a Windows-only
+// %LOCALAPPDATA%\ripwire rung would break this ladder's one-shape-everywhere rule for an environment Windows itself
+// never produces (it sets TEMP and TMP per user). README's Windows section says where the cache goes.
 inline std::string cacheDirLadder()
 {
     std::string d;
@@ -1647,10 +1681,14 @@ inline std::string cacheDirLadder()
             && os::lstat( d.c_str(), &st ) == 0 && S_ISDIR( st.st_mode ) && st.st_uid == os::getuid()
             && ( st.st_mode & 0777 ) == 0700 )
         {
-            return d;
+            return os::rebased_path( d.c_str() );
         }
     }
-    return "/dev/null/ripwire-cache-unavailable";   // unsafe/unusable candidate: make cache I/O fail closed
+    // unsafe/unusable candidate: make cache I/O fail closed. Rebased too, for the same reason — Windows'
+    // rebaseDevNull spelling ("|unusable|...", a byte no Win32 filename may hold) is what actually makes it
+    // unopenable there; the raw "/dev/null/..." spelling is only fail-closed by accident (drive-relative,
+    // usually absent) the way the bug this file exists for relied on.
+    return os::rebased_path( "/dev/null/ripwire-cache-unavailable" );
 }
 
 // popen a shell command and return its trimmed stdout ("" on any failure — never crashes). THE one copy of
@@ -1967,8 +2005,8 @@ constexpr std::uint32_t kHeadSnapCacheScheme = 1;
 // ─── THE ROOT KEY — one canonical spelling, for every cache family ────────────────────────────────────
 //
 // The 16-hex field every cache blob's filename carries, identifying the ROOT the blob belongs to:
-// `ripwire-<rootKey>-{lean,rich}.bin` (main.cpp::defaultCachePath), `ripwire-mcp-<rootKey>.cache`
-// (mcpindex.h::mcpCachePath) and `ripwire-<family>-<rootKey>-<exclHex>-<shaHex>.bin`
+// `ripwire-<rootKey>-{lean,rich}-c<format>p<parser>.bin` (main.cpp::defaultCachePath),
+// `ripwire-mcp-<rootKey>-c<format>p<parser>.cache` (mcpindex.h::mcpCachePath) and `ripwire-<family>-<rootKey>-<exclHex>-<shaHex>.bin`
 // (shaKeyedCachePath below: qheadsnap, qsnap, qbody, qhist, qms, qchurn, stier). It is what makes
 // "which root does this blob belong to?" answerable from the NAME alone — see cacheBlobRootKey and the
 // byte-budget pin in evictBySizeBudget, which is only ever as wide as the set of blobs that spell the
@@ -2074,8 +2112,18 @@ inline std::string cacheRootKeyHex( const std::string& root )
 // `static_assert( quality::kIngestParserVerMirror == kParserVer && … )`, so a missed mirror now fails the build. It does
 // not include this header; it relies on ingest.cpp including quality.h (line 13) before ingest_cache.h, and a reorder
 // that broke that fails the build on the undeclared name rather than passing.
-constexpr std::uint32_t kIngestCacheVersionMirror   = 24;   // MUST equal ingest.cpp's kCacheVersion (gated)
-constexpr std::uint32_t kIngestParserVerMirror    = 119;  // MUST equal ingest.cpp's kParserVer   (gated)
+constexpr std::uint32_t kIngestCacheVersionMirror   = 25;   // MUST equal ingest.cpp's kCacheVersion (gated); 25 = #157 + #150
+constexpr std::uint32_t kIngestParserVerMirror    = 124;  // MUST equal ingest.cpp's kParserVer   (gated)
+                                                          // 122 = 2026-09-25 (#320/#67, Astro frontmatter, see kParserVer note;
+                                                          //   kIngestCacheVersionMirror stays 25)
+                                                          // 121 = 2026-09-24 (#310, Ruby attr DSL, see kParserVer note)
+                                                          // 120 = 2026-09-23 (#150): RawRef::qualifierRootsStd +
+                                                          //   RawDef::scopeRootsStd, folded together with a
+                                                          //   same-lane F1/F2 correctness fix (2026-09-24) that
+                                                          //   briefly used 121 before collapsing back into this
+                                                          //   120 — 121 never reached main or a release, and
+                                                          //   caches are per-worktree — see ingest_cache.h's own
+                                                          //   kParserVer/kCacheVersion history for the full note.
                                                           // 119 = 2026-09-20 (T13/fix3): queries/java + queries/kotlin
                                                           //    tags.scm import captures moved @reference.call ->
                                                           //    @reference.import (RefRole::Import) — an import is a
@@ -2454,23 +2502,146 @@ inline std::string headSnapCachePath( const std::string& repoHex, const std::str
     return shaKeyedCachePath( "qheadsnap", repoHex, exclHex, headSha );
 }
 
-// The builder for the two families whose whole key IS the root — the main parse cache
-// (`ripwire-<rootKey>-lean.bin` / `-rich.bin`, main.cpp::defaultCachePath) and the MCP index
-// (`ripwire-mcp-<rootKey>.cache`, mcpindex.h::mcpCachePath). They sat in different translation units and
-// each open-coded the same three lines around its own copy of the hash, which is exactly how the two root
-// spellings drifted apart in the first place; one body means a future family joins by naming a prefix and
-// a suffix rather than by re-deriving a key. `prefix`/`suffix` bracket the 16-hex field because that is the
-// only thing the two shapes disagree about — everything the pin reads is in the middle.
-inline std::string rootKeyedCachePath( const std::string& root, const char* prefix, const char* suffix )
+// ─── THE BUILD TAG — which ingest format a root-keyed blob holds, spelled in its NAME ─────────────────────────
+//
+// #334 (follow-up). Both root-keyed families were keyed by root and verb class only, so two builds of different
+// formats — an installed release and a local build, or two installed versions — that alternate on one tree
+// refused and rewrote each other's blob on EVERY run (`format-version — not used`, reparsed=N reused=0, one path).
+// The auto names now carry the pair that decides whether a blob is readable at all, (kCacheVersion, the class's
+// parserVer): `ripwire-<rootKey>-lean-c<format>p<parser>.bin`, `ripwire-<rootKey>-rich-c<format>p<parser>.bin` and
+// `ripwire-mcp-<rootKey>-c<format>p<parser>.cache`, the rich/MCP parser number being the lean one + 1. Two builds of one format still share a blob (a rebuild of the same
+// tree must not go cold); two formats never meet at one path.
+//
+// THE TAG IS NEVER 16 HEX: `c<digits>p<digits>` always holds a 'p', so cacheBlobRootKey's "first 16-hex field"
+// rule below still reads the root key and nothing else, in every shape. Only [a-z0-9.-] appear, so the name
+// stays valid on NTFS. An explicit `--cache=PATH` is NOT tagged: that file is the user's, named by them, and is
+// often a committed `--index-out` artifact a CI job consumes by its exact name.
+//
+// The mirror pair lives in this header (see kIngestParserVerMirror); ingest_cache.h static_asserts that
+// `ingestParserVerFor` agrees with its own parserVerFor for both classes, so the tag cannot drift from the
+// header stamp the blob carries.
+inline constexpr std::uint32_t ingestParserVerFor( bool captureValueUses ) noexcept
 {
+    return kIngestParserVerMirror + ( captureValueUses ? 1u : 0u );
+}
+
+// The families whose whole key IS the root — the main parse cache's two verb classes (main.cpp::defaultCachePath)
+// and the MCP index (mcpindex.h::mcpCachePath, always the rich class) — as ONE table: the builder and the eviction
+// pin below read the same rows, so "is this blob this build's?" cannot disagree with "what does this build write?".
+enum class RootBlobFamily : std::uint8_t
+{
+    Lean,
+    Rich,
+    Mcp,
+    Count
+};
+
+struct RootBlobShape
+{
+    std::string_view prefix;       // before the 16-hex root key
+    std::string_view classField;   // between the key and the build tag ("" for the MCP index)
+    std::string_view ext;
+    bool             rich;         // which parserVer the tag names
+};
+
+inline constexpr RootBlobShape kRootBlobShapes[] = {
+    { "ripwire-",     "-lean", ".bin",   false },
+    { "ripwire-",     "-rich", ".bin",   true  },
+    { "ripwire-mcp-", "",      ".cache", true  },
+};
+static_assert( std::size( kRootBlobShapes ) == static_cast<std::size_t>( RootBlobFamily::Count ), "one shape per root-keyed family" );
+
+// Everything after the root key, build tag included: `-lean-c<format>p<parser>.bin`, `-rich-c<format>p<parser+1>.bin`,
+// `-c<format>p<parser+1>.cache`.
+inline std::string rootBlobTail( const RootBlobShape& shape )
+{
+    return std::format( "{}-c{}p{}{}", shape.classField, kIngestCacheVersionMirror, ingestParserVerFor( shape.rich ), shape.ext );
+}
+
+// The builder for every root-keyed family. They sat in different translation units and each open-coded the same
+// three lines around its own copy of the hash, which is exactly how the two root spellings drifted apart in the
+// first place; one body means a future family joins by adding a row rather than by re-deriving a key.
+inline std::string rootKeyedCachePath( const std::string& root, RootBlobFamily family )
+{
+    EXPECTS( family < RootBlobFamily::Count );
+    const RootBlobShape& shape = kRootBlobShapes[ static_cast<std::size_t>( family ) ];
+    const std::string    after = rootBlobTail( shape );
+    // Bounded: the longest prefix is "ripwire-mcp-" (12), the key is 16 hex, and the longest tail is
+    // "-rich-c<u32>p<u32>.bin" (32 at ten digits a side) — 60 of the 63 usable bytes.
+    EXPECTS( shape.prefix.size() + 16 + after.size() < 64, "a root-keyed cache name is a fixed-width prefix, key and build-tagged tail" );
     char tail[ 64 ];
-    rw::formatTo( tail, sizeof( tail ), "{}{}{}", prefix, cacheRootKeyHex( root ).c_str(), suffix );
+    rw::formatTo( tail, sizeof( tail ), "{}{}{}", shape.prefix, cacheRootKeyHex( root ), after );
     return resolveCacheBlobPath( cacheDirLadder(), tail );
+}
+
+// This build's tagged tails, one per family, built once per sweep rather than once per blob.
+using OwnBuildBlobTails = std::array<std::string, static_cast<std::size_t>( RootBlobFamily::Count )>;
+
+inline OwnBuildBlobTails ownBuildBlobTails()
+{
+    static_assert( std::tuple_size_v<OwnBuildBlobTails> == 3, "one tail per kRootBlobShapes row, in row order" );
+    return OwnBuildBlobTails{ rootBlobTail( kRootBlobShapes[ 0 ] ), rootBlobTail( kRootBlobShapes[ 1 ] ), rootBlobTail( kRootBlobShapes[ 2 ] ) };
+}
+
+// `c<digits>p<digits>` — the tag shape, and nothing else.
+inline bool isCacheBuildTagField( std::string_view field ) noexcept
+{
+    const std::size_t p = field.find( 'p' );
+    if( field.size() < 4 || field.front() != 'c' || p == std::string_view::npos || p < 2 || p + 1 >= field.size() )
+    {
+        return false;
+    }
+    const auto allDigits = []( std::string_view s ) noexcept
+    {
+        return std::all_of( s.begin(), s.end(), []( const char c ) noexcept { return c >= '0' && c <= '9'; } );
+    };
+    return allDigits( field.substr( 1, p - 1 ) ) && allDigits( field.substr( p + 1 ) );
+}
+
+// A root-keyed blob ANOTHER build wrote, read off its name alone:
+//   * a build tag that is not one of this build's tails (another kCacheVersion or parserVer), or
+//   * a pre-tag name — `ripwire-<16hex>-lean.bin`, `ripwire-<16hex>-rich.bin`, `ripwire-mcp-<16hex>.cache` —
+//     which from this change on only an older release writes.
+// Every other name (qheadsnap/qsnap/qbody/qchurn/…, whose keys already fold the extraction identity) answers
+// false and keeps exactly the pin it had.
+// A name THIS build writes for one of its root-keyed families (any root).
+inline bool isThisBuildRootBlobName( std::string_view name, const OwnBuildBlobTails& own ) noexcept
+{
+    for( std::size_t f = 0; f < own.size(); ++f )
+    {
+        if( name.starts_with( kRootBlobShapes[ f ].prefix ) && name.ends_with( own[ f ] ) )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool isOtherBuildRootBlob( std::string_view name, const OwnBuildBlobTails& own ) noexcept
+{
+    if( !name.starts_with( "ripwire-" ) || isThisBuildRootBlobName( name, own ) )
+    {
+        return false;
+    }
+    const bool             isMcp = name.starts_with( "ripwire-mcp-" );
+    const std::size_t      dot   = name.rfind( '.' );
+    const std::string_view stem  = name.substr( 0, dot );
+    const std::string_view ext   = dot == std::string_view::npos ? std::string_view{} : name.substr( dot );
+    const std::size_t      dash  = stem.rfind( '-' );
+    const std::string_view last  = dash == std::string_view::npos ? stem : stem.substr( dash + 1 );
+    if( isCacheBuildTagField( last ) )
+    {
+        return true;   // tagged, and not with this build's tag
+    }
+    // the pre-tag shapes, matched exactly: "ripwire-" (8) + 16 hex + "-lean"/"-rich" (5) + ".bin", or "ripwire-mcp-" (12) + 16 hex + ".cache"
+    const bool legacyClass = ext == ".bin" && stem.size() == 8 + 16 + 5 && ( stem.ends_with( "-lean" ) || stem.ends_with( "-rich" ) );
+    const bool legacyMcp   = isMcp && ext == ".cache" && stem.size() == 12 + 16;
+    return legacyClass || legacyMcp;
 }
 
 // P1-1 (2026-09-10 full audit) — THE PIN KEY. Every cache blob's filename carries the SAME 16-hex root
 // field, and since the follow-up round it really is the same one: `defaultCachePath` writes
-// `ripwire-<rootKey>-{lean,rich}.bin`, `mcpCachePath` writes `ripwire-mcp-<rootKey>.cache` and
+// `ripwire-<rootKey>-{lean,rich}-<tag>.bin`, `mcpCachePath` writes `ripwire-mcp-<rootKey>-<tag>.cache` and
 // `shaKeyedCachePath` writes `ripwire-<family>-<rootKey>-<exclHex>-<shaHex>.bin`, all three through the ONE
 // canonical `cacheRootKeyHex` above — so ONE root's every family (lean, rich, mcp, qheadsnap, qsnap, qbody,
 // qhist, qms, qchurn, stier) spells the same key in the same place. That makes "which root does this blob
@@ -2479,8 +2650,9 @@ inline std::string rootKeyedCachePath( const std::string& root, const char* pref
 //
 // The rule is positional-free on purpose: return the FIRST '-'-delimited field that is exactly 16 hex
 // digits. No family tag is 16 characters of hex ("qheadsnap", "qsnap", "qbody", "qhist", "qms", "qchurn",
-// "stier", "mcp"), so the first such field is the root key in every filename shape, and a foreign or legacy
-// blob that carries no such field yields "" — which pins nothing and evicts exactly as it did before.
+// "stier", "mcp"), and no build tag is either (`c<format>p<parser>` always holds a 'p'), so the first such field is the root
+// key in every filename shape, and a foreign or legacy blob that carries no such field yields "" — which pins
+// nothing and evicts exactly as it did before.
 //
 // TWO FAMILIES ARE EXCEPTIONS, and they are NAMED rather than guessed at — their 16-hex field is a real
 // key, just not a key over a ROOT:
@@ -2568,9 +2740,53 @@ struct CacheBlobStat
     std::string                     path;
 };
 
-// P1-1 (2026-09-10 full audit) — THE BYTE-BUDGET PASS: delete oldest-first until the family is under a
-// LOW-WATER mark of 7/8 budget, taking OTHER roots' blobs first and the MRU root's last. Returns the blobs
-// that survived. `mine` arrives unsorted; it is sorted oldest-first here.
+// The byte-budget pass's eviction ORDER (evictBySizeBudget below): each blob's tier, read off its name ONCE — a
+// comparator that re-derived it would parse every name O(n log n) times — then sorted by tier, oldest first within a
+// tier. Tier 0: another root's blob, or one no root owns. Tier 1: another ripwire build's blob of the root being
+// written (isOtherBuildRootBlob). Tier 2 (kEvictTierPinned): this build's blobs of that root, and keepPath itself.
+inline constexpr std::uint8_t kEvictTierPinned = 2;
+
+struct RankedBlob
+{
+    std::uint8_t tier;
+    std::size_t  blobIndex;   // into the vector that was ranked
+};
+
+inline std::uint8_t evictionTier( const std::string& blobPath, const std::string& keepPath, const std::string& pinRootKey,
+                                  const OwnBuildBlobTails& ownTails )
+{
+    if( blobPath == keepPath )
+    {
+        return kEvictTierPinned;
+    }
+    const std::string name = std::filesystem::path( blobPath ).filename().string();
+    if( pinRootKey.empty() || cacheBlobRootKey( name ) != pinRootKey )
+    {
+        return 0;
+    }
+    return isOtherBuildRootBlob( name, ownTails ) ? std::uint8_t( 1 ) : kEvictTierPinned;
+}
+
+inline std::vector<RankedBlob> rankBlobsForEviction( const std::vector<CacheBlobStat>& blobs, const std::string& keepPath )
+{
+    const std::string       pinRootKey = cacheBlobRootKey( std::filesystem::path( keepPath ).filename().string() );
+    const OwnBuildBlobTails ownTails   = ownBuildBlobTails();
+    std::vector<RankedBlob> order;
+    order.reserve( blobs.size() );
+    for( std::size_t i = 0; i < blobs.size(); ++i )
+    {
+        order.push_back( RankedBlob{ evictionTier( blobs[ i ].path, keepPath, pinRootKey, ownTails ), i } );
+    }
+    std::sort( order.begin(), order.end(), [ &blobs ]( const RankedBlob& a, const RankedBlob& b )
+               { return a.tier != b.tier ? a.tier < b.tier : blobs[ a.blobIndex ].mtime < blobs[ b.blobIndex ].mtime; } );
+    ENSURES( order.size() == blobs.size(), "every blob is ranked exactly once" );
+    return order;
+}
+
+// P1-1 (2026-09-10 full audit) — THE BYTE-BUDGET PASS: delete until the family is under a LOW-WATER mark of
+// 7/8 budget, in THREE TIERS, oldest-first within each: (0) other roots' blobs and unowned ones, (1) another
+// ripwire build's blobs of the root being written, (2) never — this build's blobs of that root and `keepPath`.
+// Returns the blobs that survived. `mine` arrives unsorted.
 //
 // THE LOW-WATER MARK is F6's live-cache finding (B7.4, 2026-07-14): trimming to exactly the budget left the
 // dir hovering AT the ceiling, so every subsequent process re-crossed it on its first write and paid
@@ -2598,10 +2814,29 @@ struct CacheBlobStat
 // says nothing at all, so no ordinary run, and no gate that compares stderr, grows a line. Plain emits,
 // NEVER DISCLOSE: NDEBUG compiles that out, and a Release binary is exactly where a 10x
 // slowdown needs to be visible.
+//
+// ANOTHER BUILD'S BLOBS OF THIS ROOT ARE TIER 1, NEITHER PINNED NOR FIRST (#334 follow-up). Since the auto names
+// carry the build tag, one root can hold a blob per build that ran on it (isOtherBuildRootBlob above).
+//   * Pinning them would make every upgrade leave the previous version's blobs pinned for the 30 days the age pass
+//     waits — on llvm-project 1.76 GB of them against a 2 GiB budget, the self-sustaining "kept anyway" state this
+//     pass exists to avoid.
+//   * Taking them oldest-first WITH other roots' blobs (the first cut of this change) evicted blobs still in use:
+//     a live MCP server of another build indexing this root, or the other build's class when two builds alternate,
+//     while evicting another root alone would have been enough. Measured by review: the server's next rebuild went
+//     from reparsed=1 to reparsed=5 of 5 files.
+// So they go only after every other root's blob is gone and the dir is still over the low-water mark. The cost that
+// remains: where one root's blobs from two builds do not fit the budget together (llvm-project, 1.76 GB per build),
+// the other build's blobs of it are evicted and that build re-parses on its next run — the pre-tag cost, paid now
+// only in that regime, and after every other root's blob was spent first.
+// The same tier also holds the version upgraded FROM: on the first save after an upgrade its blobs of this root outrank
+// every other root's, current-format ones included, so near the budget one upgrade can cost every other root a cold run.
+// Name and mtime cannot tell that version from a live one: a "superseded by this build's newer blob of the class" rule
+// fixes the upgrade case but brings the alternation thrash back (both measured by review).
 inline std::vector<CacheBlobStat> evictBySizeBudget( std::vector<CacheBlobStat>& mine, const std::string& dir,
                                                      const std::string& keepPath, std::uintmax_t maxTotalBytes )
 {
     namespace fs = std::filesystem;
+    EXPECTS( maxTotalBytes > 0, "a zero budget means 'no size pass' and evictOldCacheFamily never calls this pass with it" );
 
     std::uintmax_t totalBytes = 0;
     for( const CacheBlobStat& b : mine )
@@ -2613,19 +2848,18 @@ inline std::vector<CacheBlobStat> evictBySizeBudget( std::vector<CacheBlobStat>&
         return std::move( mine );
     }
 
-    const std::string    pinRootKey    = cacheBlobRootKey( fs::path( keepPath ).filename().string() );
-    const std::uintmax_t lowWaterBytes = maxTotalBytes - maxTotalBytes / 8;
-    std::sort( mine.begin(), mine.end(), []( const CacheBlobStat& a, const CacheBlobStat& b ){ return a.mtime < b.mtime; } );   // oldest first
+    const std::uintmax_t          lowWaterBytes = maxTotalBytes - maxTotalBytes / 8;
+    const std::vector<RankedBlob> order         = rankBlobsForEviction( mine, keepPath );
 
     std::vector<CacheBlobStat> kept;
     kept.reserve( mine.size() );
     std::size_t    evictedCount = 0;
     std::uintmax_t pinnedBytes  = 0;
-    for( const CacheBlobStat& b : mine )
+    for( const RankedBlob& r : order )
     {
-        const bool pinned = b.path == keepPath
-                         || ( !pinRootKey.empty() && cacheBlobRootKey( fs::path( b.path ).filename().string() ) == pinRootKey );
-        if( pinned )
+        ASSUME( r.blobIndex < mine.size(), "rankBlobsForEviction returns one entry per index of mine" );
+        const CacheBlobStat& b = mine[ r.blobIndex ];
+        if( r.tier == kEvictTierPinned )
         {
             pinnedBytes += b.byteSize;
         }
@@ -2643,12 +2877,12 @@ inline std::vector<CacheBlobStat> evictBySizeBudget( std::vector<CacheBlobStat>&
     constexpr std::uintmax_t kMiB = 1024ull * 1024;
     if( evictedCount > 0 )
     {
-        rw::emitTo( stderr, "ripwire: cache {}: over its {} MiB budget — evicted {} blob(s) of other roots (this root's own families are kept)\n",
+        rw::emitTo( stderr, "ripwire: cache {}: over its {} MiB budget — evicted {} blob(s) of other roots or other ripwire builds (this build's blobs for this root are kept)\n",
                       dir.c_str(), maxTotalBytes / kMiB, evictedCount );
     }
     if( totalBytes > maxTotalBytes )
     {
-        rw::emitTo( stderr, "ripwire: cache {}: this root's own families are {} MiB, past the {} MiB budget — kept anyway (evicting one costs a full re-parse)\n",
+        rw::emitTo( stderr, "ripwire: cache {}: this build's blobs for this root are {} MiB, past the {} MiB budget — kept anyway (evicting one costs a full re-parse)\n",
                       dir.c_str(), pinnedBytes / kMiB, maxTotalBytes / kMiB );
     }
     return kept;
@@ -3050,7 +3284,11 @@ inline void evictOldHeadSnapCaches( const std::string& dir, const std::string& r
 // resolution, and so two builds that resolve differently served each other's dead set (see producerIdentity).
 // Since v14 a bump is no longer what keeps two builds' blobs apart — any source change renames every blob — so
 // a semantics change that lands without one leaves this history incomplete, not a wrong answer across builds.
-constexpr std::uint32_t kQSnapCacheScheme = 14;
+// v15 (2026-09-26, lane/builtin-bind-065) — isDeadCandidate no longer counts a definition dead when a call the
+// builtin-method name gate DECLINED could have meant it (graph.h BuiltinMethodGate, Graph::gateDeclinedTarget):
+// the dead SET moved, as in v9/v12. The producer identity already keeps this build's blobs apart from older ones;
+// bumped 14 -> 15 so the history above stays complete. No extraction change: kParserVer 122 and its mirror stay.
+constexpr std::uint32_t kQSnapCacheScheme = 15;
 constexpr char          kQSnapMagic[4]    = { 'Q', 'S', 'N', 'P' };
 
 // The qsnap EXCLUDES-config key folds the qsnap SCHEME (independent of the ingest cache's kHeadSnapCacheScheme)
@@ -4178,7 +4416,7 @@ inline Snapshot computeSnapshot( const IngestResult& ing, const Graph& g, std::s
         // (editcheck.h). A COUNT is overload-collision-proof for the opposite reason a MAX is: it is the one
         // number a collision cannot hide. (maskBySym is the other non-MAX kind; it sums for its own reason.)
         { std::uint32_t& slot = snap.defsBySym[ key ];    slot += 1; }
-        if( isDeadCandidate( ing, g, i, topLevelCallees, macroIds, pythonDispatch ) )
+        if( isDeadCandidate( ing, g, i, topLevelCallees, macroIds, pythonDispatch ) && !declinedCallMayReach( g, i ) )
         {
             snap.dead.push_back( key );
         }
@@ -5452,34 +5690,7 @@ inline std::string displaySym( const std::string& sym, std::string_view root )
 // that cannot round-trip through both is refused at the flag rather than mangled at the emitter.
 inline bool scopeGlobMatch( std::string_view s, std::string_view p ) noexcept
 {
-    std::size_t si = 0, pi = 0, starAt = std::string_view::npos, resumeAt = 0;
-    while( si < s.size() )
-    {
-        if( pi < p.size() && ( p[ pi ] == '?' || p[ pi ] == s[ si ] ) )
-        {
-            ++si;
-            ++pi;
-        }
-        else if( pi < p.size() && p[ pi ] == '*' )
-        {
-            starAt   = pi++;      // remember the last `*` and where its tail may resume, so a failed suffix
-            resumeAt = si;        // match backtracks by one character instead of giving up
-        }
-        else if( starAt != std::string_view::npos )
-        {
-            pi = starAt + 1;
-            si = ++resumeAt;
-        }
-        else
-        {
-            return false;
-        }
-    }
-    while( pi < p.size() && p[ pi ] == '*' )
-    {
-        ++pi;                     // trailing stars may still match the empty tail
-    }
-    return pi == p.size();
+    return wildcardMatch( s, p );   // arch.h — one wildcard loop for the scope patterns and resolve.h's workspace globs
 }
 
 // The wildcard-free arm: a root-anchored prefix that must end ON a component boundary, so `alpha` can never
@@ -5646,6 +5857,9 @@ enum class AckProvenance : std::uint8_t
     None = 0,        // legacy row — no now=/was= on the line at all
     Measured,        // read off the live delta this row was accepted from
     Reconstructed,   // healed from the CURRENT tree by a backfill pass — see backfillCloneAckProvenance
+    Unknown,         // now=/was= present, but prov= names a spelling this binary never wrote — round-tripped
+                      // verbatim (AckRecord::provRaw) rather than promoted into either real claim; see
+                      // ackProvenanceFor for why guessing either direction is the honesty-contract violation.
 };
 
 // The token `prov=` carries in the ledger. Omitted entirely for Measured, the same OMIT-when-default rule
@@ -5722,6 +5936,12 @@ struct AckRecord
     std::uint32_t line          = 0;
     AckProvenance provenance    = AckProvenance::None;
     std::string   reason;
+    // The literal `prov=` token text when `provenance == Unknown` — a spelling neither this binary's
+    // canonical `recon` nor its "absent/live" Measured spelling, so there is nothing true to compute from
+    // it. Kept verbatim so a hand-written or future-binary value ROUND-TRIPS through a read+rewrite instead
+    // of being silently promoted into a false "reconstructed by us" claim or silently dropped. Empty for
+    // every other provenance. See ackProvenanceFor / ackProvenanceTokens.
+    std::string   provRaw;
 
     // "is there anything here to re-score at all" — the question every pre-existing call site asked of
     // the bool this replaces, kept as a predicate so adding the confidence axis changed no caller's
@@ -5791,9 +6011,13 @@ inline std::string ackMapKey( const std::string& kind, std::uint64_t key )
 // ledger's own blame is that anchor, and it is a separate lane — see AckRecord's doc comment for the
 // measured cost and for why the LAST write, not the first appearance, is the commit to re-diff.
 //
-// IDEMPOTENT AND DETERMINISTIC, both by construction rather than by care: a row that already carries
-// provenance is never rewritten (so a second run is a no-op, and a Measured row can never be downgraded to
-// Reconstructed), `acks` is a btree_map so the walk is (kind,key) sorted, and `facts` is sorted+deduped by
+// IDEMPOTENT AND DETERMINISTIC, both by construction rather than by care — but NOT because a row that
+// already carries provenance is left alone: a Measured row is the only row never rewritten (a measurement
+// outranks anything this pass could derive, so it can never be downgraded to Reconstructed); a Reconstructed
+// row IS rewritten on every run whose group is still found (`++out.refreshed`, not skipped), re-derived from
+// the same deterministic facts about the CURRENT tree. Idempotence therefore holds because that re-derivation
+// is a pure function of (member-set hash, current tree) and produces the same bytes every time — not because
+// the row is skipped. `acks` is a btree_map so the walk is (kind,key) sorted, and `facts` is sorted+deduped by
 // its producer so the lookup is a binary search over a stable sequence.
 struct AckBackfill
 {
@@ -5868,8 +6092,16 @@ inline AckBackfill backfillCloneAckProvenance( gtl::btree_map<std::string, AckRe
         rec.now        = rec.ackNow;
         rec.facet      = hit->idiom;
         rec.provenance = AckProvenance::Reconstructed;
+        rec.provRaw.clear();   // this run just derived a REAL reconstruction — any prior unrecognized spelling is superseded
         ++( wasReconstructed ? out.refreshed : out.resolved );
     }
+    // Every row this pass looked at landed in exactly one counter (`continue`d after incrementing it, or
+    // fell through to the resolved/refreshed increment above) — a plain size_t sum with no accessor behind
+    // it, so it costs nothing to state and nothing to check. This is the invariant a reader would otherwise
+    // verify by hand (the review that found this backfill had zero self-checks in +380 lines did exactly
+    // that, over two separate runs, before trusting the six numbers on stderr).
+    ENSURES( out.resolved + out.refreshed + out.unverified + out.unresolved + out.ineligible + out.measured == acks.size(),
+              "every ack row lands in exactly one backfill counter" );
     return out;
 }
 
@@ -6175,10 +6407,24 @@ inline void splitAckLocator( const std::string& token, std::string& pathOut, std
 // loop and nothing else. `hasPair` is "both now= and was= were present", because provenance is the PAIR:
 // without it there is nothing for a confidence to qualify, whatever prov= says.
 //
-// An UNRECOGNIZED value degrades to Reconstructed, never to Measured, and says so. Reading an unknown
-// confidence as the STRONGEST one would let a future spelling this binary does not know silently promote
-// itself into the audited-as-measured population — the exact direction the honesty contract forbids
-// guessing in. Same "degrade, do not fabricate" rule takeAckUintPrefix applies to an unparseable now=.
+// An UNRECOGNIZED value degrades to Unknown, never to Measured and never to Reconstructed. Reading it as
+// Measured would let a future spelling this binary does not know silently promote itself into the
+// audited-as-measured population — the exact direction the honesty contract forbids guessing in. Reading it
+// as Reconstructed (an earlier version of this function did) is the OTHER direction of the same mistake: it
+// claims backfillCloneAckProvenance verified this row from the current tree, which is false for any row that
+// pass does not own (every numeric/churn/presence kind — see AckBackfill::ineligible) and unproven for a
+// clone-kind row whose group this run cannot find either. `writeAckRecords` would then serialize a plain
+// hand-typed value as the ledger's own canonical `prov=recon` spelling — a claim of verified reconstruction
+// this binary never performed. AckRecord::provRaw carries the exact bytes instead: caller-side
+// (`takeAckProvenance`) stores `provToken` there when this function returns Unknown, and
+// `ackProvenanceTokens` writes `prov=<provRaw>` verbatim, so an unrecognized value ROUND-TRIPS through a
+// read+rewrite unchanged rather than being rewritten into either claim. A clone-kind row still gets one real
+// chance to become genuinely Reconstructed: backfillCloneAckProvenance runs on every row regardless of this
+// function's verdict, and treats Unknown the same as legacy (its member-set hash may still be found in the
+// CURRENT tree) — so it self-corrects into the real spelling when the tree can prove it, and round-trips
+// otherwise. It is never withdrawn: the same "absence is a floor, not a verdict" rule that keeps the backfill
+// from deleting an unverified reconstruction (see backfillCloneAckProvenance) applies here too — an
+// unrecognized token is unproven, not disproven, and this codebase's ratchet never destroys a row on a floor.
 inline AckProvenance ackProvenanceFor( bool hasPair, std::string_view provToken )
 {
     if( !hasPair )
@@ -6189,13 +6435,16 @@ inline AckProvenance ackProvenanceFor( bool hasPair, std::string_view provToken 
     {
         return AckProvenance::Measured;   // absent IS measured — that is what keeps a live-written ledger byte-identical
     }
-    // Anything else — a hand-edit, or a spelling some future binary writes — lands here. It is NOT a trace
-    // site: a one-argument DISCLOSE ships nothing (Diagnostics.h §4b), there is no sink in a pure token
-    // parser to pass, and answerUnchanged would be a false claim because this choice DOES change the row's
-    // confidence class. The remedy is better than a trace and is already wired: a Reconstructed row is
-    // re-derived by the next backfill pass, so an unrecognized value either self-corrects into a spelling
-    // this binary wrote or is withdrawn outright — and the counts of both land on stderr.
-    return AckProvenance::Reconstructed;
+    if( provToken == kAckProvReconToken )
+    {
+        return AckProvenance::Reconstructed;   // the one spelling this binary itself writes for a healed row
+    }
+    // Anything else — a hand-edit, or a spelling some future binary writes — is NOT ours to interpret. It is
+    // also not a trace site: a one-argument DISCLOSE ships nothing (Diagnostics.h §4b), there is no sink in a
+    // pure token parser to pass, and answerUnchanged would be a false claim because this choice DOES change
+    // the row's confidence class. The caller (takeAckProvenance) captures `provToken` verbatim into
+    // AckRecord::provRaw so it round-trips instead.
+    return AckProvenance::Unknown;
 }
 
 // ONE pass of the token loop: take whichever re-score token is at the front of `reason` right now, or
@@ -6228,6 +6477,10 @@ inline void takeAckProvenance( std::string& reason, AckRecord& rec )
         }
     }
     rec.provenance = ackProvenanceFor( gotNow && gotWas, prov );
+    if( rec.provenance == AckProvenance::Unknown )
+    {
+        rec.provRaw = prov;   // round-trip the exact bytes — see ackProvenanceFor for why this is not our call to relabel
+    }
 }
 
 // ─── THE READER-SIDE TWIN OF THE ACK REASON CLOBBER (2nd site, round 2026-08-30) ───────────────────────
@@ -6432,21 +6685,33 @@ struct SidecarWriteLock
 // legitimately 0 (dead-code and both clone kinds always are). The token's PRESENCE, not its value, is what a
 // later reader (rescoreAckRecord) uses to tell a provenance-bearing row from a legacy one.
 //
-// prov= is written only for the WEAKER confidence. Measured emits nothing, so a ledger whose rows were all
+// prov= is written only for the WEAKER confidences. Measured emits nothing, so a ledger whose rows were all
 // written from a live delta is byte-identical to one written before the confidence axis existed — the same
 // OMIT-when-default rule cid=/by= follow, and what keeps qackconcurrencycheck arm 7's round-trip over the
-// real 1,623-row ledger from moving a single byte until a backfill actually runs.
+// real 1,623-row ledger from moving a single byte until a backfill actually runs. Reconstructed writes the
+// canonical `recon` spelling; Unknown writes AckRecord::provRaw verbatim — never `recon` — so a hand-typed or
+// future-binary spelling this binary does not understand round-trips through a read+rewrite unchanged
+// instead of being relabelled as a reconstruction this binary never performed (see ackProvenanceFor).
 inline std::string ackProvenanceTokens( const AckRecord& r )
 {
     if( !r.hasProvenance() )
     {
         return {};
     }
+    EXPECTS( r.provenance != AckProvenance::Unknown || !r.provRaw.empty(),
+             "takeAckProvenance always pairs Unknown with the raw token it was read from" );
     std::ostringstream t;
     t << "now=" << r.now << " was=" << r.was << ' ';
     if( r.provenance == AckProvenance::Reconstructed )
     {
         t << "prov=" << kAckProvReconToken << ' ';
+    }
+    else if( r.provenance == AckProvenance::Unknown )
+    {
+        // Never scopeSpecIsSpellable-gated like facet=/p= below: provRaw was read back by takeAckNamedToken,
+        // which only ever takes a single whitespace-delimited token in the first place, so it cannot contain
+        // a space or newline to begin with — there is nothing here a spellability check could catch.
+        t << "prov=" << r.provRaw << ' ';   // round-trip verbatim — never our canonical spelling, never claimed as ours
     }
     // facet= and p= are single whitespace-delimited tokens, so a value that cannot be spelled as one is OMITTED,
     // the same closed-set rule by= uses (scopeSpecIsSpellable). A repository path may contain a space: written
@@ -7516,8 +7781,13 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
                                              std::size_t maxFileBytes = kDefaultMaxFileBytes,
                                              std::size_t* registerMacroExcludedOut = nullptr,   // P2.2: honest disclosure count, additive+optional — see isDeadCandidate
                                              std::size_t* apiNewSurfaceOut = nullptr,          // Q-DIAL-4: the api-surface new-symbol COUNT that replaced N never-gating rows
-                                             std::vector<CloneIdiomFact>* cloneIdiomsOut = nullptr )   // every CURRENT-tree clone group's (hash, idiom), for the legacy-ack backfill
+                                             std::vector<CloneIdiomFact>* cloneIdiomsOut = nullptr,   // every CURRENT-tree clone group's (hash, idiom), for the legacy-ack backfill
+                                             std::size_t* declinedCallExcludedOut = nullptr )         // symbols kept out of dead-code ONLY by a declined call (declinedCallMayReach)
 {
+    if( declinedCallExcludedOut )
+    {
+        *declinedCallExcludedOut = 0;
+    }
     ASSUME( registerMacroExcludedOut == nullptr || registerMacroExcludedOut != apiNewSurfaceOut,
                  "computeDelta: registerMacroExcludedOut and apiNewSurfaceOut must be distinct" );   // both default to nullptr, so the object form would dereference null
     std::vector<Regression> regs;
@@ -7954,6 +8224,14 @@ inline std::vector<Regression> computeDelta( const IngestResult& ing, const Grap
             if( macroExempt && registerMacroExcludedOut )
             {
                 ++( *registerMacroExcludedOut );   // P2.2: would be dead-code but for the macro exemption — disclosed count
+            }
+            continue;
+        }
+        if( declinedCallMayReach( g, i ) )
+        {
+            if( declinedCallExcludedOut )
+            {
+                ++( *declinedCallExcludedOut );    // would be dead-code but for a declined call that may reach it — disclosed count
             }
             continue;
         }

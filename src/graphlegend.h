@@ -383,7 +383,7 @@ inline const char* forRootRelPathsLegendShort( bool rootOn, bool atOn = false ) 
 // widening round proved false and which no extractor can make true — the sentence promised exhaustiveness
 // over a name-based, statically-extracted reference index. Restated as what IS true.
 inline constexpr const char* kUsesLegendOpen =
-    "<!-- ripwire uses: STATICALLY RESOLVABLE use-sites of SYM (role=call|macro|read|write|import|extends|type; p=file:line) — a floor, see counts_floor below; that role list is the whole vocabulary. role=\"type\" is a bare TYPE mention (a signature, declaration or template argument) with NO call edge — real but not an invocation, so it never reaches the call graph, PageRank or the ranked map; captured C/C++/ObjC only, and only a plain leaf spelling (a qualified or aliased spelling contributes no row). A base clause is role=\"extends\", never role=\"type\"; a type's own DEFINITION is never a use of itself. role=\"macro\" is the call-shaped invocation of a name uniquely naming an indexed function-like #define — never role=\"call\" (an expansion is not a plain call); a name shared with a non-macro definition stays role=\"call\". Rows are ordered SOURCE first, then test/bench, then docs, by path within a tier. A MEMBER selector (Owner.field) is resolved per site instead of name-matched — that run's legend says how. "
+    "<!-- ripwire uses: STATICALLY RESOLVABLE use-sites of SYM (role=call|macro|read|write|import|extends|type; p=file:line) — a floor, see counts_floor below; that role list is the whole vocabulary. role=\"type\" is a bare TYPE mention (a signature, declaration or template argument) with NO call edge — real but not an invocation, so it never reaches the call graph, PageRank or the ranked map; captured C/C++/ObjC only, and only a plain leaf spelling (a qualified or aliased spelling contributes no row). A base clause is role=\"extends\", never role=\"type\"; a type's own DEFINITION is never a use of itself. role=\"macro\" is the call-shaped invocation of a name uniquely naming an indexed function-like #define — never role=\"call\" (an expansion is not a plain call); a name shared with a non-macro definition stays role=\"call\". Rows are ordered SOURCE first, then test/bench, then docs; within a tier by the enclosing symbol's callers, then path. A MEMBER selector (Owner.field) is resolved per site instead of name-matched — that run's legend says how. "
     // M12: in_id= was emitted (here and on --verify's uses()/unused() <u> rows) with no clause anywhere
     // defining it — a reader had to guess it was the CALLER's canonical id from shape alone. Written to the
     // shortest honest form, deliberately: test/graphlegendbudgetcheck.sh's ratchet exists to stop the shared
@@ -429,7 +429,7 @@ inline constexpr const char* kImpactLegendOpen =
 // these closure-written directives; lazy="0" means at least one is load-time (an ordinary top-level
 // require/import, a class-body or file-level receiver), so the dependency also holds at load.
 inline constexpr const char* kImpactImportTierLegend =
-    "importers= is a SECOND, weaker reach: the files that directly include/import a file defining SYM, as <f via=\"import\" p=\"…\" lazy=\"0|1\"/> rows after the symbol rows — not call reach, never added to reaches= (different units, files vs symbols; an importer may use a different symbol from that file, or none at all). DIRECT (one hop), never the transitive include cone. lazy=\"1\" means every one of that importer's edges into SYM's file is written INSIDE A CLOSURE (a TS/JS require()/import() in a function body, a Ruby constant receiver or argument in a method/lambda/block, a Ruby autoload or rescue class), firing only if and when it runs; lazy=\"0\" means at least one edge is load-time. shown_importers=/importers_capped= disclose that listing's own truncation (importers= stays the full count); limit=/offset= window the symbol rows only. ";
+    "importers= is a SECOND, weaker reach: the files that directly include/import a file defining SYM, as <f via=\"import\" p=\"…\" lazy=\"0|1\"/> rows after the symbol rows — not call reach, never added to reaches= (different units, files vs symbols; an importer may use a different symbol from that file, or none at all). DIRECT (one hop), never the transitive include cone. lazy=\"1\" means every one of that importer's edges into SYM's file is written INSIDE A CLOSURE (a TS/JS require()/import() in a function body, a Ruby constant receiver or argument in a method/lambda/block, a Ruby autoload or rescue class), firing only if and when it runs; lazy=\"0\" means at least one edge is load-time. shown_importers=/importers_capped= disclose that listing's own truncation (importers= stays the full count); most-imported first; limit= sizes it, offset= windows the symbol rows only. ";
 
 // The columnar form re-serializes the SYMBOL rows as parallel arrays and has no row shape for a second
 // listing, so it carries importers= alone. Said in band rather than left as a shape difference a reader
@@ -489,7 +489,7 @@ inline constexpr const char* kTestedColumnLegend =
 // code path with the edge direction flipped, and giving them two descriptions is precisely the per-verb
 // vocabulary §3.4 forbids.
 inline constexpr const char* kCallHierarchyLegendOpen =
-    "<!-- ripwire callers/callees: the 1-hop call hierarchy read off the call graph — the callers form lists symbols that CALL of=; the callees form lists symbols of= itself calls. of= is the selector you passed, defs= how many DEFINITIONS it resolved to (rows UNION every def's neighbours), count= the DISTINCT neighbour symbols (a floor, per counts_floor=), windowed by limit= and offset=. A neighbour that is an indexed function-like #define is a macro row (t=\"macro\", role=\"macro\" on the XML row): the edge crosses a macro expansion, not a plain call — rows carry no role= otherwise. Rows are ordered SOURCE first, then test/bench, then docs, by path within a tier. hop_tested=/hop_untested= partition count= by the tested= lens below (1-hop, never transitive). "; // LB-G
+    "<!-- ripwire callers/callees: the 1-hop call hierarchy read off the call graph — the callers form lists symbols that CALL of=; the callees form lists symbols of= itself calls. of= is the selector you passed, defs= how many DEFINITIONS it resolved to (rows UNION every def's neighbours), count= the DISTINCT neighbour symbols (a floor, per counts_floor=), windowed by limit= and offset=. A neighbour that is an indexed function-like #define is a macro row (t=\"macro\", role=\"macro\" on the XML row): the edge crosses a macro expansion, not a plain call — rows carry no role= otherwise. Rows are ordered SOURCE first, then test/bench, then docs; within a tier callers rank by each row's own caller count (most-called first); callees keep path order. hop_tested=/hop_untested= partition count= by the tested= lens below (1-hop, never transitive). "; // LB-G
 
 // V1 fix (verifier finding 3, 2026-08-15): bodyless_defs= is a CALLEES-only attribute — main.cpp's emitter
 // gates it behind `!wantCallers`, so a --callers document can never carry it. It used to sit inside
@@ -553,21 +553,44 @@ inline const char* capLegendClause( bool active ) noexcept
 
 // ── TIER-3 DECLINES — declined_calls= on the callers, callees and impact answers (test/declinecheck.sh) ────
 // A call whose candidates are two or more same-language definitions, none in the caller's file or directory,
-// and that no qualifier or receiver rule pinned, gets NO edge: the resolver declines to guess. Until this
+// and that no qualifier or receiver rule pinned, gets NO edge: the resolver declines to guess. So does a call the
+// builtin-method name gate refused (graph.h BuiltinMethodGate), whatever the number of definitions. Until this
 // clause the decline was also SILENT, so count="0" read as "no caller exists" about a call the resolver had
 // seen. One sentence for the three answers and their MCP twins, emitted exactly when the attribute is:
 // declinedCallsLegend( bool ) takes the emitter's own attribute-present condition, never a re-derivation. No
 // double hyphen anywhere, because it lands inside an XML comment.
 inline constexpr const char* kDeclinedCallsLegend =
     "declined_calls=K (absent when 0) counts call SITES the resolver declined to bind: the called name has two or more same-language definitions, none in the caller's file or directory, and no qualifier, receiver type or include chose one, so no edge exists and no count or row here includes them (the map header's declined=). Callers form: declined calls that could have meant this selector's definitions; impact form: that could have reached SYM or a symbol in its radius; callees form: declined calls these definitions make. Each call counts once however many candidates it had; the uses verb on the called name lists the sites. ";
+// The builtin-method name gate's declines (graph.h BuiltinMethodGate) ride the same count with ONE definition possible;
+// this clause is charged only where the gate declined at least one call in the graph (Graph::gateDeclinedCalls), so an
+// answer on a tree the gate never touched keeps its bytes.
+inline constexpr const char* kDeclinedCallsGateClause =
+    "It also counts a call named like a builtin-type method (dict.get, list.append) whose bound definitions' classes the caller's file never names. ";
 inline const char* declinedCallsLegend( bool on ) noexcept { return on ? kDeclinedCallsLegend : ""; }
+inline const char* declinedCallsGateLegend( bool on ) noexcept { return on ? kDeclinedCallsGateClause : ""; }
+// --test-gate's own short form: the same attribute and unit, sized for a verb whose legend has an absolute byte budget
+// (test/testgatelegendbudgetcheck.sh), so it defines the one form it emits rather than all three.
+inline constexpr const char* kDeclinedCallsTestGateLegend =
+    "declined_calls=K (absent when 0): K call SITES the resolver declined to bind that could have reached the change or its radius (the map's declined=); a test behind one is in no row here. ";
+// The clause and, where the gate declined in this graph, its gate sentence — the one spelling every declined_calls= emitter uses.
+inline std::string declinedCallsLegendWithGate( bool on, bool gateDeclined ) { return std::string( declinedCallsLegend( on ) ) + declinedCallsGateLegend( on && gateDeclined ); }
 
 // ONE absent-at-zero count attribute: ` name="N"`, or nothing at all when count is 0. declined_calls= below and
 // --skipped's extent_suspect_files=/macro_blanked_files= (root) and extent_suspect_syms=/macro_blanked= (<h> rows)
 // all spell through it, so the shape has one definition instead of a copy per verb.
+// `json` spells the same count as a key instead: `,"name":N` (imports_unresolved= is the one caller today).
+inline std::string countFieldOrEmpty( std::string_view name, std::size_t count, bool json )
+{
+    if( count == 0 )
+    {
+        return {};
+    }
+    const std::string n = std::to_string( count );
+    return json ? ",\"" + std::string( name ) + "\":" + n : " " + std::string( name ) + "=\"" + n + "\"";
+}
 inline std::string countAttrXmlOrEmpty( std::string_view name, std::size_t count )
 {
-    return count > 0 ? " " + std::string( name ) + "=\"" + std::to_string( count ) + "\"" : std::string();
+    return countFieldOrEmpty( name, count, /*json=*/false );
 }
 
 // The attribute and the key, one spelling each, absent at zero like bodyless_defs= and graph_unindexed=.
@@ -578,6 +601,89 @@ inline std::string declinedCallsAttrXml( std::size_t declinedCalls )
 inline std::string declinedCallsKeyJson( std::size_t declinedCalls )
 {
     return declinedCalls > 0 ? ",\"declined_calls\":" + std::to_string( declinedCalls ) : std::string();
+}
+
+// ── #220 part 1 — imports_unresolved=, the FILE graph's own gauge (test/depsprecisecheck.sh, the #220 arms) ─────────
+// graph_unresolved= above is the CALL graph's resolver gauge; this is the include/import graph's. It counts the TS/JS
+// import directives that drew no edge although the project's own config places their specifier in this tree — a
+// tsconfig/jsconfig `paths` alias, a `baseUrl` path, a workspace member's package name (resolve.h, namespace
+// tsimport, states the three rules). Absent at zero, like graph_unindexed=: a tree with no such import is byte-
+// identical. On --deps and --arch graph_partial="1" rides with it: the cause/reading pair of THE TRUNCATION
+// VOCABULARY's rule 4 (pageview.h), but the reading is NOT counts_floor. A missing edge only ADDS edges, yet adding one
+// can MERGE two reported cycles into one (cycles are SCCs, so the complete count can be LOWER) and moves every ratio
+// either way (instab = Ce/(Ca+Ce): a missing INCOMING edge leaves it too high), so "every count here is a floor"
+// would be false on both roots. graph_partial="1" says what is true: the values were measured over the resolved edges
+// only (the `<scope>_partial="1"` family of tier_partial=). --impact's root keeps counts_floor="1", which is true
+// there: importers= only rises as edges are added. Each legend clause below is emitted exactly when its attribute is
+// (the caller passes the count, never a re-derivation).
+inline std::string importsUnresolvedAttrXml( std::uint64_t importsUnresolved )
+{
+    return countAttrXmlOrEmpty( "imports_unresolved", std::size_t( importsUnresolved ) );
+}
+inline std::string importsUnresolvedKeyJson( std::uint64_t importsUnresolved )
+{
+    return countFieldOrEmpty( "imports_unresolved", std::size_t( importsUnresolved ), /*json=*/true );
+}
+inline constexpr const char* kGraphPartialAttrXml = " graph_partial=\"1\""; // tsImportRootAttrXml below composes it
+// graph_partial='s reading is ONE sentence, spelled identically in both full legends below and in the compact term
+// (compactlegend.h); test/depsprecisecheck.sh's #220 (I) arms pin it in all three, so the wordings cannot fork.
+inline constexpr const char* kDepsImportsUnresolvedLegend =
+    "imports_unresolved=N graph_partial=1 (root, absent at 0): N TS/JS imports name this tree (a tsconfig/jsconfig paths alias, a baseUrl path, a workspace package, a package.json imports entry, an @/ or ~ specifier no registry can publish; asset imports never count) yet drew no edge, so every value here is measured over resolved edges; unresolved imports could add, merge or remove cycles and change ratios (an absent cycles element is no proof of none); afferent=/transitive=/ccd/acd/nccd can only rise. ";
+inline constexpr const char* kArchImportsUnresolvedLegend =
+    " imports_unresolved=N graph_partial=1 (absent at 0): N TS/JS imports name this tree (a paths alias, a baseUrl path, a workspace package, a package.json imports entry, an @/ or ~ specifier; asset imports never count) yet drew no edge, so an edge through one was never judged: violations= can only rise, and the metrics are measured over resolved edges; unresolved imports could add, merge or remove cycles and change ratios.";
+inline constexpr const char* kImpactImportsUnresolvedLegend =
+    "imports_unresolved=N (absent at 0): N TS/JS imports name this tree (a tsconfig/jsconfig paths alias, a baseUrl path, a workspace package, a package.json imports entry, an @/ or ~ specifier no registry can publish; asset imports never count) yet drew no edge, so importers= is a floor. ";
+// #220 part 2 — the resolver's two further disclosures, beside imports_unresolved= and absent at zero like it:
+// imports_dts= counts the edges that land only on a declaration file (types, not source — every count includes them),
+// tsconfig_unread= the owning configs whose `extends` base or `references` project is not in the tree and could have
+// declared an alias (or, for a reference, owned the importer). An
+// alias nobody read is an import that drew no edge, so tsconfig_unread= makes the root partial exactly as
+// imports_unresolved= does: graph_partial="1", never counts_floor (the part-1 reasoning above holds unchanged). One
+// composer for the --deps and --arch roots, so the attribute order is fixed: a root that carries only
+// imports_unresolved= is byte-identical to part 1's. Each legend clause defines graph_partial= itself, so a root with
+// tsconfig_unread= and no imports_unresolved= still has its reading defined.
+// The three counts one --deps/--arch root discloses (packDeps' parameter; graph.h StructuralIncludeAdj fills them).
+struct TsImportRootCounts
+{
+    std::uint64_t unresolved = 0; // imports_unresolved=
+    std::uint64_t dts = 0; // imports_dts=
+    std::uint64_t unread = 0; // tsconfig_unread=
+};
+inline std::string tsImportRootAttrXml( std::uint64_t importsUnresolved, std::uint64_t importsDts, std::uint64_t tsconfigUnread )
+{
+    std::string s = importsUnresolvedAttrXml( importsUnresolved ) + countAttrXmlOrEmpty( "imports_dts", std::size_t( importsDts ) ) + countAttrXmlOrEmpty( "tsconfig_unread", std::size_t( tsconfigUnread ) );
+    return importsUnresolved > 0 || tsconfigUnread > 0 ? s + kGraphPartialAttrXml : s;
+}
+inline constexpr const char* kDepsImportsDtsLegend =
+    "imports_dts=N (root, absent at 0): N TS/JS imports resolved through a paths alias, a baseUrl path or a workspace package only to a .d.ts declaration, not to source; their edges are in every count. ";
+inline constexpr const char* kDepsTsconfigUnreadLegend =
+    "tsconfig_unread=N graph_partial=1 (root, absent at 0): N config files that could declare an alias or a workspace package were not read (an extends base or referenced project not in the tree, one that does not parse, or a tsconfig/jsconfig/workspace root above the crawl root, looked for up to the git top-level), so every value here is measured over resolved edges; unresolved imports could add, merge or remove cycles and change ratios. ";
+inline constexpr const char* kArchImportsDtsLegend = " imports_dts=N (absent at 0): N TS/JS imports resolved only to a .d.ts declaration.";
+inline constexpr const char* kArchTsconfigUnreadLegend =
+    " tsconfig_unread=N graph_partial=1 (absent at 0): N config files that could declare an alias or a workspace package were not read (an extends base or referenced project not in the tree, one that does not parse, or a tsconfig/jsconfig/workspace root above the crawl root, looked for up to the git top-level), so an edge through one was never judged: violations= can only rise, and the metrics are measured over resolved edges; unresolved imports could add, merge or remove cycles and change ratios.";
+// Two legend clauses, each exactly when its count is non-zero (the #220 composers below all have this shape).
+inline std::string clausesForCounts( std::uint64_t countA, const char* clauseA, std::uint64_t countB, const char* clauseB )
+{
+    return std::string( countA > 0 ? clauseA : "" ) + ( countB > 0 ? clauseB : "" );
+}
+inline std::string depsTsImportExtrasLegend( std::uint64_t importsDts, std::uint64_t tsconfigUnread )
+{
+    return clausesForCounts( importsDts, kDepsImportsDtsLegend, tsconfigUnread, kDepsTsconfigUnreadLegend );
+}
+inline std::string archTsImportExtrasLegend( std::uint64_t importsDts, std::uint64_t tsconfigUnread )
+{
+    return clausesForCounts( importsDts, kArchImportsDtsLegend, tsconfigUnread, kArchTsconfigUnreadLegend );
+}
+inline const char* depsImportsUnresolvedLegend( bool on ) noexcept { return on ? kDepsImportsUnresolvedLegend : ""; }
+inline const char* archImportsUnresolvedLegend( bool on ) noexcept { return on ? kArchImportsUnresolvedLegend : ""; }
+// --impact's import tier (CLI and MCP twin): imports_unresolved='s clause, then tsconfig_unread='s, each exactly when
+// the root carries its attribute. An unread config makes importers= a floor for the same reason (an alias nobody read
+// drew no edge; importers= only rises as edges are added).
+inline constexpr const char* kImpactTsconfigUnreadLegend =
+    "tsconfig_unread=N (absent at 0): N config files that could declare an alias or a workspace package were not read (an extends base or referenced project not in the tree, one that does not parse, or a tsconfig/jsconfig/workspace root above the crawl root, looked for up to the git top-level), so importers= is a floor. ";
+inline std::string impactTsImportLegend( std::uint64_t importsUnresolved, std::uint64_t tsconfigUnread )
+{
+    return clausesForCounts( importsUnresolved, kImpactImportsUnresolvedLegend, tsconfigUnread, kImpactTsconfigUnreadLegend );
 }
 
 // ── THE DECL→DEF RESIDUE — unproven_defs= on the callers/callees answers (test/decltodefcheck.sh arm E2) ──

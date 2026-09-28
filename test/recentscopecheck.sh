@@ -33,7 +33,7 @@
 #      control that proves the two "carries no capped=/next=" assertions can actually SEE those attributes.
 #   8  merge_bombs_skipped= rides BOTH blocks.
 #   9  determinism (two runs byte-identical), well-formed XML, both legends define scope= and the stub.
-#  10  next= names THIS run's corpus and window, or says nothing at all past 120 bytes.
+#  10  next= names THIS run's corpus and window, in full, however long — no length ceiling drops it.
 #  11  the scoped block's ABSENCE rule is the global block's: absent ⇒ no history mined.
 #  12  the crawl CEILING rides next= too: a hint emitted under --max-file-size=N replays N, so the page it
 #      names is a page of the same corpus (it dropped the flag and landed on of="3" against of="2").
@@ -534,18 +534,52 @@ ofP2="$( scopedTag "$P2EX" | grep -oE 'of="[0-9]+"' | head -1 | tr -dc '0-9' )"
 [ -n "$ofP2" ] && [ "$ofP2" = "$ofEx" ] \
     && ok "arm 10d: the pasted next= lands on the SAME corpus (of=\"$ofP2\" both sides)" \
     || no "arm 10d: the pasted next= sees of=\"$ofP2\" where the page it came from saw of=\"$ofEx\""
-# past kNextAttrMaxBytes (120 B) the attribute is ABSENT — a hint that pastes wrong is worse than none — and
-# has_more= still says the page exists, so a reader is never told the answer is complete.
+# past 120 B the pasteable next= attribute used to be ABSENT — a hand-hacked "policed" ceiling in
+# nextAttrXml that discarded a complete, runnable invocation instead of naming the loss (an earlier draft
+# of this fix; REVERTED). The ruling: a complete answer in the fewest bytes still means a follow-up
+# TERMINATES the search, so nextAttrXml (2026-09-25) now carries NO length ceiling at all — the full
+# invocation is emitted whatever it costs, and it must actually paste and run.
+# RED on origin/main (the base silently drops next= past 120 B — absent, and has_more="1" is the reader's
+# only signal a page exists past this one, with no route back to it).
 LONG="$( run --rank-by=churn-decay --in=db --exclude=util/u0.py --exclude=my --exclude=-dash --exclude=gold_outside.py --since='3 years ago' --limit=39 --offset=1 2>/dev/null )"
 tagLong="$( scopedTag "$LONG" )"
+# XML-unescape (the attribute's --since='3 years ago' round-trips through &apos;): the byte count and the
+# pasted invocation must both be measured on the DECODED string, the same one nextAttrXml built and sized.
+nextLong="$( printf '%s' "$tagLong" | grep -oE 'next="[^"]*"' | sed 's/^next="//;s/"$//' \
+             | sed "s/&quot;/\"/g; s/&apos;/'/g; s/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g" )"
 if [ -z "$tagLong" ]; then
     no "arm 10e: the long-invocation run emitted no scoped block (vacuous)"
-elif printf '%s' "$tagLong" | grep -q 'next='; then
-    no "arm 10e: a next= longer than 120 B was emitted anyway: $tagLong"
-elif printf '%s' "$tagLong" | grep -q 'has_more="1"'; then
-    ok "arm 10e: an over-120-byte next= is absent, and has_more=\"1\" still says the page exists"
+elif [ -z "$nextLong" ]; then
+    no "arm 10e: the over-120-byte next= is absent — nextAttrXml must emit it in full: $tagLong"
+elif [ "${#nextLong}" -le 120 ]; then
+    no "arm 10e: the fixture's next= is only ${#nextLong} B (<=120) — not a real test of the no-ceiling rule: $nextLong"
 else
-    no "arm 10e: the long-invocation page is not cut, so the cap is untested (got: $tagLong)"
+    ok "arm 10e: the over-120-byte next= is emitted in full (${#nextLong} B), never dropped"
+fi
+# and — the north star's own test — the full next= must actually PASTE AND RUN and land on the same page
+if [ -n "$nextLong" ]; then
+    ofLong="$( printf '%s' "$tagLong" | grep -oE 'of="[0-9]+"' | head -1 | tr -dc '0-9' )"
+    P2LONG="$( pasteNext "$REPO" "$nextLong" )"
+    ofP2Long="$( scopedTag "$P2LONG" | grep -oE 'of="[0-9]+"' | head -1 | tr -dc '0-9' )"
+    [ -n "$ofP2Long" ] && [ "$ofP2Long" = "$ofLong" ] \
+        && ok "arm 10f: the full over-120-byte next= runs and lands on the SAME corpus (of=\"$ofP2Long\" both sides)" \
+        || no "arm 10f: the over-120-byte next= did not reproduce its own page — pasted of=\"$ofP2Long\", original of=\"$ofLong\": $nextLong"
+    # 10g: the SAME corpus is not enough — a next= that dropped --offset replays page one on the same corpus. The
+    # long invocation asked for --limit=39 --offset=1, so its next page is --offset=40 (arm 3a pins this for the
+    # short invocation), and the replayed page must say offset="40" and share no row with the page it came from.
+    offLong="$( printf '%s' "$tagLong" | grep -oE ' offset="[0-9]+"' | head -1 | tr -dc '0-9' )"
+    offP2Long="$( scopedTag "$P2LONG" | grep -oE ' offset="[0-9]+"' | head -1 | tr -dc '0-9' )"
+    rowsLong="$( scopedRows "$LONG" )"; rowsP2Long="$( scopedRows "$P2LONG" )"
+    sharedLong="$( printf '%s\n' "$rowsP2Long" | grep -c -x -F -f <( printf '%s\n' "$rowsLong" ) )"
+    case " $nextLong " in
+        *" --offset=40 "*) nextOff=1 ;;
+        *)                 nextOff=0 ;;
+    esac
+    { [ "$nextOff" = 1 ] && [ "$offLong" = 1 ] && [ "$offP2Long" = 40 ] && [ -n "$rowsLong" ] && [ -n "$rowsP2Long" ] && [ "$sharedLong" = 0 ]; } \
+        && ok "arm 10g: the long next= carries --offset=40 and its page starts past the original (offset=\"1\" -> offset=\"40\", no shared row)" \
+        || no "arm 10g: the long next= does not continue past its page — --offset=40 in next=: $nextOff, offset=\"$offLong\" -> offset=\"$offP2Long\", $sharedLong shared row(s): $nextLong"
+else
+    no "arm 10f: no next= to paste (arm 10e already failed)"
 fi
 
 # ── arm 11: the scoped block's ABSENCE rule is the global block's ──────────────────────────────────

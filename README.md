@@ -54,26 +54,8 @@ claim cannot quietly drift. The row-by-row ledger is
 JavaScript · Java · Ruby · PHP · Lua · Elixir · Dart · Kotlin · GDScript · Bash · C# · JSON · TOML · YAML · Markdown — see
 [language support and limits](#languages).
 
-**ripwire 0.6.2 — complete, honest, fast lookups, and Windows.** Calls that live outside any named function now
-have a caller: on vue-core, 72.83% of call sites that `--callers`, `--impact` and `--test-gate` could not see.
-Answers got smaller where it counts: the compact legend is the default (`--legend=full` restores the old bytes
-byte-for-byte), and over MCP each definition is sent once per session instead of in every answer.
-`--quality-delta` is trustworthy on a clean tree again. Native Windows x64 now builds and gates with **both**
-clang-cl and MSVC's own `cl.exe`, verified in CI on every full matrix — the 647-gate suite doesn't run on
-Windows yet, and ASan compiles there but never executes.
-
-**ripwire 0.6.1 — the answers an agent reads got smaller.** A compact answer is 46–66% smaller per call, and on
-llvm-project the declined-call index drops from 114 MB to 368 KB with every count and every byte of output
-unchanged. `--in=DIR` scopes "what changed recently" to a directory. Elixir resolves natively by module, name and
-arity (thanks @henry-hz), `--scip` reads scip-java indexes (thanks @dpunosevac), and a `file:name` selector no
-longer answers with a definition from another file (thanks @andriytyurnikov).
-
-**ripwire 0.6.0 — out now.** Kotlin and Dart bring it to 24 vendored grammars, and Ruby now reads the dependencies a
-Rails application actually has: superclasses, mixins, `autoload`, and the constant receivers an autoloader loads
-through. On llvm-project — 182,555 files — the cold parse drops from 194 s to 156 s of CPU. Declined calls, derailed parses
-and cut answers now say so, instead of returning a quiet zero.
-
-**[The presentation](present/ripwire-showcase.pdf) · [the changelog](CHANGELOG.md)** — with thanks to the
+**Latest: 0.6.5** — TypeScript alias imports resolve, and fixes from Windows testers. [Release notes](#release-notes) ·
+[the presentation](present/ripwire-showcase.pdf) · [the changelog](CHANGELOG.md) — with thanks to the
 contributors named there; this release is largely theirs.
 
 ---
@@ -922,6 +904,52 @@ export PATH="$HOME/.local/bin:$PATH"      # not on PATH by default on macOS or m
 ```
 </details>
 
+<a id="windows"></a>
+<details>
+<summary><b>Windows x64 (preview)</b> — a zip with <code>ripwire.exe</code> and the skills, no runtime to install first; a preview until Windows users confirm it</summary>
+
+**Windows x64 — preview.** From 0.6.3 each release carries `ripwire-<version>-windows-x64.zip` and its `.zip.sha256`.
+It is built with clang-cl against the static C runtime, so it needs no Visual C++ Redistributable, and like the Linux
+x64 binary it needs an x86-64-v3 (AVX2) CPU. CI unzips and exercises it on every train, including a byte-for-byte
+comparison of its output with Linux's, but no maintainer runs Windows, so treat it as a preview until Windows users
+report back. The exe is not code-signed. `Expand-Archive` does not pass the download's Mark-of-the-Web on to the
+files it extracts, so SmartScreen does not prompt for an exe unpacked this way; no prompt is not a verdict. In PowerShell:
+
+```powershell
+$v = "0.6.3"; $a = "ripwire-$v-windows-x64"; $u = "https://github.com/redhat-et/ripwire/releases/download/v$v"
+Invoke-WebRequest "$u/$a.zip" -OutFile "$a.zip"; Invoke-WebRequest "$u/$a.zip.sha256" -OutFile "$a.zip.sha256"
+# extracts only when the SHA-256 matches; on a mismatch it throws and nothing is unpacked
+if ((Get-FileHash "$a.zip" -Algorithm SHA256).Hash -eq (Get-Content "$a.zip.sha256").Split(" ")[0]) { Expand-Archive "$a.zip" -DestinationPath "$env:LOCALAPPDATA\Programs" } else { throw "SHA-256 mismatch: do not run $a.zip" }
+$bin = "$env:LOCALAPPDATA\Programs\$a"
+[Environment]::SetEnvironmentVariable("Path", "$bin;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")
+$env:Path = "$bin;$env:Path"   # this window too; new windows read the user Path
+ripwire --version
+```
+
+- **The hash check** passes because `-eq` ignores case: `Get-FileHash` prints upper-case hex and the `.sha256` file
+  is lower-case. For a case-sensitive compare, use `.Hash.ToLower() -ceq`.
+- **Comparing two outputs in Git Bash:** use `cmp`. There `fc` is a shell builtin (it replays history) and compares
+  nothing; the Windows tool is `fc.exe`, run as `MSYS_NO_PATHCONV=1 fc.exe /b a b` so `/b` is not rewritten as a path.
+- **Git for Windows** is needed for the git-history features (churn, `--situ`, the `git` row of `--doctor`) and for
+  the skills installer. The map itself runs without it.
+- **`ripwire . --doctor`**: every row should read `ok="1"`. `binary-path` finds `ripwire` the way PowerShell does
+  (`Path` in order, then `PATHEXT`). When it fails, `which=` names the `ripwire` that `Path` finds first, and
+  `which_version=` is what that one prints for `--version`. `same_bytes="unknown"` means a copy could not be read;
+  the row fails as unverified, so compare the two with `Get-FileHash`. The cache lives in `%LOCALAPPDATA%\Temp\ripwire-<uid>`
+  (your `TEMP`). With `TMPDIR`, `TEMP` and `TMP` all unset, Windows' own temp-directory rule falls back to your profile
+  folder, so the cache is `%USERPROFILE%\ripwire-<uid>`; the `cache-dir` row names the directory either way.
+- **Checking cache reuse:** in PowerShell `$env:RIPWIRE_CACHE_STATS=1; ripwire . > $null` (in Git Bash
+  `RIPWIRE_CACHE_STATS=1 ripwire . > /dev/null`) prints one `cache-stats` line on stderr. Run it twice with no other ripwire build in between: `reparsed=0` and `reused=` equal to `files=` mean every
+  file came from the cache. `warm_growths=` is a performance counter, not a reuse fact: it counts how often a worker
+  thread's buffer had to grow, which depends on how the threads split the files, so it varies from run to run by design.
+- **Agent skills** (Claude Code, Codex): from Git Bash, in the unzipped folder, `bash skills/install.sh` (Claude Code)
+  or `bash skills/install.sh --codex`. From PowerShell, name Git Bash by full path,
+  `& "C:\Program Files\Git\bin\bash.exe" skills/install.sh`: a bare `bash` there is often WSL's
+  (`C:\Windows\System32\bash.exe`), which installs into the WSL home, where Windows agents never look. Or copy them by hand in PowerShell:
+  `New-Item -ItemType Directory -Force "$HOME\.claude\skills" | Out-Null; Copy-Item -Recurse -Force "$bin\skills\ripwire-*" "$HOME\.claude\skills\"`
+  (Codex reads `$HOME\.agents\skills`). `--hook` is untested on Windows, and `scripts/install.sh` (the curl installer) does not run there.
+</details>
+
 **Building it yourself needs CMake 3.24+ and a C++23 compiler, and nothing else installed first** —
 every dependency is vendored in-tree, so the build completes with the network off.
 
@@ -1051,7 +1079,7 @@ The structural family's `nest=` reports the single deepest line in a function. O
 a thousand lines at depth 9 produce the same number — which means a long **blocked-sequential** body (a
 run of shallow scoped steps, its max set by one inner loop nobody has to hold in their head) is
 indistinguishable from a **tangled** one that sustains depth for hundreds of lines. Every consumer of
-`nest=` inherited that blindness: the panel's structural family, `--readability`'s rank, the ensemble join.
+`nest=` inherited that blindness: the panel's structural family, `--biggest-first`'s rank, the ensemble join.
 
 `--metrics` now emits the **profile** beside the max — `humps=` (how many maximal regions reach the
 nesting bar, CodeScene's "bumpy road": a rise above the threshold then a fall, so repeated missing
@@ -1097,7 +1125,7 @@ stated reason, not an oversight:
 | --- | --- | --- | --- |
 | `--field-affinity` | which struct fields are read together but declared far apart; each loop's access shape (index vs pointer-chase) | its subject is a **type**, not a function — attributing a struct's finding to the functions touching it is a claim the lens never makes | `MainDispatch`: **12** findings at separation cost **92.88**; **1,374** loops classified, **5** genuine pointer-chases |
 | `cache-*` lint rules + `--with-profile` | cache-hostile access shapes (alloc-in-loop, `p=p->next`, `a[b[i]]`, node containers, …), then which are *measured* hot | rows are facts about **sites**, joined to per-scope hardware counters — not per-function evidence a family vote could count | aggressive rules: **0** hits in shipping `src/`; **327** findings adversarially triaged → **0** fix-worthy; the one open refactor settled by measurement (5.2 ms) |
-| `--readability` | orders by Halstead volume, Posnett sigmoid (a size proxy — the readability-ordering claim is withdrawn) | the fitted score **saturates past 20 lines** — only the ordering is meaningful, and an ordering cannot vote in a count | ordering only, never a grade |
+| `--biggest-first` (was `--readability`) | orders by Halstead volume, Posnett sigmoid (a size proxy — the readability-ordering claim is withdrawn) | the fitted score **saturates past 20 lines** — only the ordering is meaningful, and an ordering cannot vote in a count | ordering only, never a grade |
 | `--naming-consistency` | off-convention names, each with a computed `propose=` | the one lens that emits **advice** — a fix is not evidence, so it does not vote | camelCase dominant at **93.0%**; **136** names flagged with proposals |
 | `--lint --naming-locals` | the naming rules pointed at local variables inside already-flagged functions | **opt-in and unvalidated** — stays outside any join until a real-corpus audit clears it (the withdrawn-rule lesson) | +**973** findings that were structurally invisible before |
 
@@ -1151,7 +1179,8 @@ rather than blurring it:
   measured run — **5.2 ms, 5.9% of the verb** — a wasted afternoon prevented by a number
   ([`docs/CACHELINT.md`](docs/CACHELINT.md) holds the full catalog, the wave-2 specs, and the
   compiler-handled myths deliberately *not* checked).
-- **`--readability`** is a sibling lens, not a panel family either — the one classic model in the tree
+- **`--biggest-first`** (renamed from `--readability`, which still works — a stderr note points scripts at
+  the new spelling) is a sibling lens, not a panel family either — the one classic model in the tree
   with a published closed form: Halstead volume (Halstead, *Elements of Software Science*, 1977) and
   the Posnett/Hindle/Devanbu sigmoid fit (MSR 2011, [doi:10.1145/1985441.1985454](https://doi.org/10.1145/1985441.1985454)),
   fitted on snippets of 20 lines or fewer — past that the fitted score saturates and only the
@@ -1159,7 +1188,7 @@ rather than blurring it:
   grade. Halstead's volume specifically (not the later, less-trusted difficulty/effort derivatives) is
   among the metrics shown to track measured cognitive load directly (Peitek, Apel, Parnin, Brechmann &
   Siegmund, ICSE 2021, [doi:10.1109/ICSE43902.2021.00056](https://doi.org/10.1109/ICSE43902.2021.00056)) —
-  `--readability` emits volume and stops there; difficulty and effort are computed nowhere in this
+  `--biggest-first` emits volume and stops there; difficulty and effort are computed nowhere in this
   tree. **A ranking lens, never a grade, and here is what it actually orders:** on ripwire's own
   history at the pinned `v0.6.2` tag (412 function pairs mined from 80 refactor/simplify/cleanup
   commits), the order between two versions of a function followed the sign of its token-count change
@@ -1174,7 +1203,7 @@ rather than blurring it:
   (CIs include 1), so the order this verb produces is better explained as a residual size proxy,
   measured in the lens's own units, than as an independent readability signal (derivation:
   [`docs/EVALS.md` §8](docs/EVALS.md)). The lens's computation is unchanged pending a proper human
-  study, and `--help=--readability` carries the same figures where a CLI reader meets them.
+  study, and `--help=--biggest-first` carries the same figures where a CLI reader meets them.
 - **`--naming-consistency`** is the *lexical* family's one exception to "evidence, never advice": every
   other lens in this panel tells you WHAT is wrong, never a computed fix. Case-style consistency is
   the one property with a corpus-derivable answer — on this repository's `src/`, camelCase is the
@@ -1329,9 +1358,12 @@ with several definitions and the resolver guessed. Read the source when which-ta
 
 **The test gate** — `--test-gate` names the obligations and exits 4 while any remain. Captured with an
 uncommitted change in the tree: `changed="1"` and the rows below appear only because something was
-actually pending. A clean clone exits 0 with every changed/impacted/test count at zero — except
-`script_gates_unmodelled=`, which is structural (it counts script-to-binary test runners the call
-graph cannot see, not git status) and stays nonzero even then:
+actually pending. A clean clone exits 0 with every changed/impacted/test count at zero. The structural
+counts describe the tree, not git status, so they stay nonzero even then: `script_gates_unmodelled=`
+(script-to-binary test runners the call graph cannot see), `script_gates_registered=`,
+`script_gates_mapped=` and `script_gates_unresolved_dynamic=` (the suite's registered shell gates, and how
+many of them map to their dependencies), and the resolver gauges `graph_ambiguous=`, `graph_unresolved=`
+and `graph_unindexed=`. The capture below predates the `script_gates_*` registry counts and those gauges:
 
 ```
 $ ripwire . --test-gate          # exit code: 4
@@ -1346,8 +1378,20 @@ $ ripwire . --test-gate          # exit code: 4
 ```
 
 A `run=` attribute appears only when a runner is derivable from real evidence — a test-dir script
-whose stem matches the harness, or whose text names it. A row with none says so — `run_unknown="1"`,
-never a guessed suite command — and a `<t>` or `<g>` row carries one or the other, never neither. A
+whose stem matches the harness, or whose text names it; for TypeScript/JavaScript, a file already
+recognized as test code (`test/`/`tests/`/`__tests__/`, or a `_test./.test./_spec./.spec.` name — the
+`__tests__/` directory convention is shared with every language, the rest are TS/JS's own) whose name
+ALSO matches vitest/jest's own test-name shape (`.test.`/`.spec.`, or living under `__tests__/` at
+all, jest's own two default conventions — never a `.d.ts` declaration file) — whose nearest
+`package.json` names `vitest`, `jest`, or node's own test runner. Its own `package.json` is
+AUTHORITATIVE for the whole subtree below it: a non-empty, non-placeholder `scripts.test` entry
+decides the runner (or decides none — a same-named dependency never overrides it, whether that
+dependency sits in the same manifest or a parent one), and only a manifest with NEITHER a real
+`scripts.test` NOR a `vitest`/`jest` dependency is skipped in favour of one further up. A TS/JS file
+with no manifest evidence of its own still falls back to the SAME test-dir shell/Python driver search
+every other language uses — a named driver beats an
+unguessed default. A row with none says so — `run_unknown="1"`, never a guessed suite command — and a
+`<t>` or `<g>` row carries one or the other, never neither. A
 `<g hops="2" n="3" p="a,b,c" run_unknown="1"/>` row is **two or more contiguous runner-less rows whose
 attributes are byte-identical**, served as one: `n=` is how many, `p=` is their paths verbatim in list
 order, and the disclosure is paid once per group rather than once per row. Everything else stays its own
@@ -1358,7 +1402,83 @@ over these rows counts test FILES: a `<g>` row is `n=` of them.
 `script_gates_unmodelled="332"` is the same discipline: script-to-binary is not a call edge, so those
 gates are invisible to this walk, and the number says so rather than letting `tests="2"` read as
 complete. The `<u>` rows are the untested blast radius: impacted symbols that no test in the corpus
-reaches.
+reaches — never a file's own `<file-scope>` module scope (a top-level statement or anonymous-callback
+body), since nothing in any language can name it and no test could ever be written for it; it still
+counts toward `impacted=` when it is a real caller in the blast radius, just never as an obligation.
+Those excluded owners are counted, not dropped without a trace: `untested_modscope="N"` (always
+present, alongside `untested=`) says how many, so a change whose only reader is an untestable
+entrypoint discloses why `untested=` reads zero instead of looking like there was nothing to find.
+The capture above predates that attribute (and a few other root attributes added since), so its root
+lacks it; today's root carries `untested_modscope="N"` immediately after `untested=`.
+
+A TS/JS file with NO manifest evidence of its own (no `package.json` anywhere in the crawl boundary, or
+the nearest one decides nothing) still gets one more chance before falling to the shell/Python driver
+search above: its own bytes are read for a `node:test` import or require — `import test from "node:test"`,
+`import { test, describe } from "node:test"`, `require("node:test")`, single or double quoted (#60). This
+is a real parse, not a substring scan: a `"node:test"` mention inside a comment or an unrelated string
+literal is not evidence. An explicit `package.json` `scripts.test` (or `vitest`/`jest` dependency) still
+wins over this — including an authoritative-but-unrecognized script, which is a decided "no" — so the
+import fallback only ever fires on what was previously `run_unknown="1"`.
+
+For a `.ts`/`.mts`/`.cts` file — whether the runner was named by `scripts.test: "node --test"` or inferred
+from the import above — a `run=` command is spelled only where the checks below find nothing that makes Node
+refuse to start it. They are read off the repository's own bytes, so they cannot see the Node that will run
+it, and a refusal is `run_unknown="1"`, never a guess:
+
+- **`.tsx` and `.jsx` never get a command.** Node's type stripping does not cover `.tsx` at all
+  (`ERR_UNKNOWN_FILE_EXTENSION`), and plain `node` cannot load a `.jsx` file at all, on any Node version —
+  both stay `run_unknown="1"` unconditionally.
+- **Every relative import/require must resolve exactly as written, in the test file and in every local
+  TypeScript module it reaches.** Node's module resolver, under type stripping, never probes an extension
+  and never maps a `.js` specifier onto a `.ts` source — the exact shapes tsc-, tsx- and bundler-run TS code
+  uses to import its own siblings. So a command is spelled only when every relative (`./`/`../`) static
+  `import`/`export … from` specifier or `require(...)` argument names a file that exists on disk at that
+  exact path. The walk follows each specifier that lands on a `.ts`/`.mts`/`.cts` file, reads at most 64
+  modules, and a walk cut at that bound stays `run_unknown="1"` too.
+- **No module on that walk may use syntax type stripping cannot erase.** Node strips types and rewrites
+  nothing, so an `enum`, a `namespace` with runtime code (or holding only `declare` statements), the legacy
+  `module M {}` keyword, a constructor parameter property, an import alias (`import A = B.C`,
+  `import x = require(…)`), `export =`, an angle-bracket assertion `<T>x` or a decorator stops it with
+  `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` (or a parse error) before any test runs; any of them outside a
+  `declare` stays `run_unknown="1"`. A type-only namespace and a `declare enum` are erased and do not count.
+- **The command is additionally Node-version-aware, from `engines.node`.** `--experimental-strip-types`
+  itself exists from Node 22.6 only (an older Node refuses to start at all with it); stripping is ON BY
+  DEFAULT — the flag becomes a harmless no-op — from Node 22.18 and separately from Node 23.6 (two floors,
+  not one continuous range: 23.6 turned it on first, the 22.x line got it later by backport, and a bare
+  23.0–23.5 does not have it). This tool cannot see which
+  Node will run the emitted command, so it reads `engines.node` from the nearest manifest: the bare
+  `node --test <file>` when that range proves every satisfying Node has stripping on by default; the
+  flagged `node --experimental-strip-types --test <file>` when it proves >= 22.6 but not provably
+  default-on, or when there is no manifest at all (a stated assumption of a Node that strips types with the
+  flag, not a guess at an unseen runtime); and `run_unknown="1"` when the range admits ANY Node below 22.6
+  (a plain `>=18`/`^20`, or a compound range like `>=24 || ^20`, where every `||` alternative must pass on
+  its own) or cannot be read with confidence at all. Each alternative is read for its upper bound too,
+  because the default-on versions have a gap: `^22.18.0` gets the bare form, but `>=22.18` also admits
+  23.0–23.5 and keeps the flag.
+
+Every node:test file, `.js` or TypeScript, must also load as the module kind its own syntax needs. A file
+with a static ES `import`/`export` runs as an ES module only as `.mjs`/`.mts`, under `"type": "module"` in
+its nearest `package.json`, or on a Node with default module-syntax detection (22.7 and later, 20.19 on the
+20.x line). Without one of those the command stays `run_unknown="1"`: an explicit `"type": "commonjs"` (or a
+`.cjs`/`.cts` file) turns detection off, and with no `"type"` the `engines.node` range must prove detection —
+`>=22.7` does, `>=20.19` does not, since it admits 21.x. With no `engines.node` at all, a TypeScript file keeps
+the stated assumption above and a `.js` file stays `run_unknown="1"`, since its command otherwise rests on
+no assumption at all. A CommonJS file (`require`, no ES `import`/`export`) runs either way.
+
+`.js`/`.mjs`/`.cjs` never need the flag. Their one version question is the runner itself: the `--test` flag
+exists from Node 18.1 and, by backport, 16.17 — never on 17.x, and 18.0 has the `node:test` module but not
+the flag. So `engines.node` must not admit a Node below 18 without it: `^16.17.0`, `>=18` and `>=18.1` get the bare
+form, while `>=16`, `>=16.17` and `16.17 - 18` (they reach 17.x) stay `run_unknown="1"`, and so does a range confined
+to 18.0.x such as `18.0.x`. A hyphen range `A - B` is bounded by B. `>=18` is accepted although it admits 18.0:
+that is one release from April 2022, the command fails loudly there, and refusing the most common spelling would make
+the answer useless on most projects. No `engines.node` at all keeps the bare form.
+
+A TS/JS `run_unknown="1"` can still mean the manifest genuinely names nothing recognized (and the test file
+itself names no `node:test` import either), one of the refusals above, or a real runner this tool does not
+yet derive: node's own test runner invoked through `tsx` (when neither the manifest nor the test file's own
+bytes name `node:test` directly) and `bun`'s test runner. These stay an honest unknown rather than a guess;
+`pnpm`/`yarn`-prefixed test scripts derive correctly today (spelled `npx …`, which finds a local binary
+first).
 
 </details>
 
@@ -1377,16 +1497,6 @@ cmake --build build 2>&1 | ./build/ripwire . --from-trace=-
 </details>
 
 ---
-
-## What's new
-
-**0.6.0 — 2026-09-11.** Kotlin and Dart bring the vendored grammars to 24; Ruby now reads the dependencies a
-Rails application actually has — superclasses, mixins, `autoload`, and the constant receivers an autoloader
-loads through. On llvm-project, 182,555 files, the cold parse drops from 194 s to 156 s of CPU. Declined calls,
-derailed parses and cut answers say so now, instead of returning a quiet zero.
-
-Every release, with its measurements and its caveats, is in **[CHANGELOG.md](CHANGELOG.md)** — that file is the
-record, and this line is only the pointer to it.
 
 ## Measured
 
@@ -1867,9 +1977,9 @@ wrong, and it has. These are the results that say so, all in-tree, all published
 ### In the tests
 
 <details>
-<summary><b>647 gate scripts</b>, five contracts no unit test can hold, and the house rule: write the gate before the code it measures</summary> <!-- gatecount -->
+<summary><b>650 gate scripts</b>, five contracts no unit test can hold, and the house rule: write the gate before the code it measures</summary> <!-- gatecount -->
 
-`test/regression.sh` names **647 gate scripts** and is the authoritative list; <!-- gatecount -->
+`test/regression.sh` names **650 gate scripts** and is the authoritative list; <!-- gatecount -->
 `python3 test/pargates.py . ./build/ripwire -j 6` runs the same set in parallel. On top of them sit the
 contracts that do not fit a unit test: two runs byte-identical, warm output identical to cold, output
 that pipes clean through `xmllint --noout`, a sanitizer build with `-fno-sanitize-recover=all`, and a
@@ -2219,7 +2329,7 @@ same renderer. One computation has one output shape.
 
 | Item | Requirement |
 | --- | --- |
-| Operating system | macOS (arm64 or x86-64) or Linux (arm64 or x86-64). Native Windows x64 **builds** with both clang-cl and MSVC `cl.exe` — CI builds both on `windows-latest` every full matrix and smoke-tests each binary (`--version`, `ctest`, a real crawl, the two-run byte-identical contract, well-formed XML); the 647-gate suite does not run there, and ASan is compiled but never executed, so treat it as a build, not a validated platform. No prebuilt Windows binary is published; WSL2 remains the supported way to RUN it on a Windows machine. |
+| Operating system | macOS (arm64 or x86-64) or Linux (arm64 or x86-64). Native Windows x64 **builds** with both clang-cl and MSVC `cl.exe` — CI builds both on `windows-latest` every full matrix and smoke-tests each binary (`--version`, `ctest`, a real crawl, the two-run byte-identical contract, well-formed XML); the 650-gate suite does not run there, and ASan is compiled but never executed, so treat it as a build, not a validated platform. From 0.6.3 a prebuilt `windows-x64` zip ships as a **preview** ([Windows](#windows)): CI unzips it and compares its output with Linux's byte for byte, but no maintainer runs Windows, so WSL2 remains the fully supported way to run it on a Windows machine. |
 | Prebuilt Linux floor | RHEL 8 or later (glibc 2.28) |
 | Prebuilt macOS floor | macOS 14 or later, Apple silicon. 0.6.1 is the last release with an Intel macOS binary; on an Intel Mac, pin `RIPWIRE_VERSION=v0.6.1` or build from source. |
 | x86-64 floor | x86-64-v3 (Intel Haswell, 2013, or later), for a prebuilt binary and a source build alike |
@@ -2267,6 +2377,8 @@ binary to `~/.local/bin`. The installer also stages the agent skills under
 `~/.local/share/ripwire/skills`. It activates the skills for each agent it finds. It does not edit
 your shell profile. It does not register hooks. To register hooks, run
 `bash ~/.local/share/ripwire/skills/install.sh --hook`.
+
+On Windows the installer does not apply: download the `windows-x64` zip instead ([Windows](#windows), a preview).
 
 #### 3.2 Build from source
 
@@ -2571,11 +2683,12 @@ a RHEL 9 userland, both build flavours, and the fallback-emitter build — so th
 on every commit, not only when you check it. To re-check it on your own tree:
 
 ```bash
-ripwire . > a
-ripwire . > b
-diff -q a b              # two runs, byte-identical
-ripwire . --no-cache > c
-diff -q a c              # and the warm run equals the cold one
+t=$(mktemp -d)           # outside the tree: an output written inside it is crawled by the next run
+ripwire . > "$t/a"
+ripwire . > "$t/b"
+diff -q "$t/a" "$t/b"    # two runs, byte-identical
+ripwire . --no-cache > "$t/c"
+diff -q "$t/a" "$t/c"    # and the warm run equals the cold one
 ```
 
 Neither diff may report a difference.
@@ -2610,7 +2723,7 @@ python3 test/pargates.py . ./build/ripwire -j 6
 A new gate script must be added to `test/regression.sh` in the same change. The gate
 `test/manifestcheck.sh` enforces this rule.
 
-Another gate derives the cap inventory. The tool has 222 compile-time caps and 7 ranking parameters.
+Another gate derives the cap inventory. The tool has 229 compile-time caps and 7 ranking parameters.
 `docs/LIMITS.md` lists each cap, its value, and whether the file discloses a truncation when the cap
 fires, and `python3 docs/limits_build.py --check` proves that list against `src/`. `docs/TUNING.md`
 lists the measured cost of each cap.
@@ -2705,7 +2818,7 @@ file, and one row in the extension table.
 | Metal (MSL) | `.metal` | Indexed with the C++ grammar. |
 | CUDA | `.cu`, `.cuh` | `<<<>>>` launch sites are call edges. |
 | Python | `.py` | |
-| TypeScript / JavaScript | `.ts`, `.tsx`, `.js`, `.jsx` | Named imports and default imports resolve. One vendored dependency supplies two of the 25 grammars, `typescript` and `tsx`. |
+| TypeScript / JavaScript | `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs` | Named imports and default imports resolve. One vendored dependency supplies two of the 25 grammars, `typescript` and `tsx`. `.astro` frontmatter rides this same `Lang` — see its own row below. |
 | Java | `.java` | Qualified `new` calls resolve in a precise tier. |
 | Kotlin | `.kt` | Shares one call graph with Java. A file with string templates past 128 levels is refused and listed by `--skipped`. |
 | Ruby | `.rb` | Superclasses, mixins, `autoload`, and constant receivers are read. |
@@ -2718,6 +2831,7 @@ file, and one row in the extension table.
 | Go | `.go` | Qualified calls are rejected and fenced, not guessed. |
 | Rust | `.rs` | Scoped, turbofish, and `Self::` calls resolve in a precise tier. |
 | Bash | `.sh`, `.bash` | |
+| Astro | `.astro` | **Frontmatter only.** The `---`-fenced block is parsed as TypeScript, through one `ts_parser_set_included_ranges` call; the template half — including `<script>` bodies and `{…}` interpolations — is NOT indexed, so a call made only from the template produces no edge. An `.astro` file reports `lang="ts"` because it rides `Lang::TypeScript` (that is what lets a frontmatter call resolve into a `.ts` service). A top-level frontmatter call is module-scope code, so `--callers` names `<file-scope>` rather than a function. No Astro grammar is vendored. |
 | GDScript | `.gd` | A file is a class body: `class_name` names it and file-scope `func`/`var` are its members. A signal is indexed as a member. `preload`/`load` produce no dependency edge. `.tscn`, `.tres`, and `.gdshader` are not indexed. |
 | JSON | `.json` | Config keys become symbols. The lane emits no call edges. |
 | TOML | `.toml` | A table header is one symbol. Keys below it are one level down. |
@@ -2817,6 +2931,61 @@ Copyright 2026 David Brewster
 
 Vendored third-party code keeps its own license. `THIRD_PARTY.md` lists every dependency and its
 terms.
+
+---
+
+## Release notes
+
+**ripwire 0.6.5 — TypeScript alias imports resolve, and fixes from Windows testers.** Imports through a tsconfig alias,
+`baseUrl` or a workspace package are now real edges, so `--deps`, `--arch`, `--impact` and the call graph see them, and a
+config ripwire could not read is disclosed rather than guessed (thanks @srinchow). On Windows, `--doctor` searches PATH as
+Windows does and no longer calls a byte-identical copy stale; two ripwire builds on one tree no longer re-parse on every
+run (thanks @elsRobin, @lennix1337 and @antoniojosedev for testing). `--doctor`'s PATH hint can be pasted as printed.
+`--for` lifts a symbol the task names verbatim. In Python, JS/TS and Ruby, a method call on a dict or map binds to an
+in-repo method of that name only when the calling file names its class (or one in its inheritance cone); otherwise it
+is declined and counted (`declined_calls=`).
+
+**ripwire 0.6.4 — Windows fixes from real testers, and honest TypeScript answers.** On Windows without symlink rights,
+the skills installer no longer reports success after creating empty folders: it copies instead, or says it failed. `--doctor`
+no longer mistakes an older ripwire on PATH for the running one (thanks @elsRobin). `--deps` no longer reports `cycles="0"`
+when TypeScript alias or workspace imports couldn't be resolved (thanks @srinchow). `node:test` files get a runnable
+`node --test` command where Node can run them as written (thanks @YogevKr and @alex-michaud), and a long `next=` is
+never dropped. Astro joins the languages (thanks @sclyde).
+
+**ripwire 0.6.3 — nothing cut quietly, and a Windows download.** A cut answer now keeps its strongest rows and
+names what it dropped, with a `next=` for the rest. Releases include a Windows x64 zip (preview), checked against
+Linux output on every train, and the Windows cache works as `--doctor` reports (thanks @elsRobin). `--regex`
+escapes, nested `std::` calls, `--field-affinity` and `--clones` paging no longer give wrong answers, and
+`--test-gate` finds TS/JS test runners (thanks @mariadb-KyleHutchinson). Ruby's `attr_*` defines its methods (thanks
+@mpapis), and the hooks no longer stall long Bash calls (thanks @KilimcininKorOglu).
+
+**ripwire 0.6.2 — complete, honest, fast lookups, and Windows.** Calls that live outside any named function now
+have a caller: on vue-core, 72.83% of call sites that `--callers`, `--impact` and `--test-gate` could not see.
+Answers got smaller where it counts: the compact legend is the default (`--legend=full` restores the old bytes
+byte-for-byte), and over MCP each definition is sent once per session instead of in every answer.
+`--quality-delta` is trustworthy on a clean tree again. Native Windows x64 now builds and gates with **both**
+clang-cl and MSVC's own `cl.exe`, verified in CI on every full matrix — the 647-gate suite doesn't run on
+Windows yet, and ASan compiles there but never executes.
+*Thanks to @lennix1337 for the native Windows port. Code from @mpapis (`--lsp`), @sclyde (GDScript), @s0undt3ch,
+@rainhuang0220, @qinghuanandejiangshi, @csy20, @aniruddhaadak80 and @llvm-x86. Reports from @YogevKr,
+@alex-michaud, @mariadb-KyleHutchinson, @hnipps and @SVC-MACSTUDIO.*
+
+**ripwire 0.6.1 — the answers an agent reads got smaller.** A compact answer is 46–66% smaller per call, and on
+llvm-project the declined-call index drops from 114 MB to 368 KB with every count and every byte of output
+unchanged. `--in=DIR` scopes "what changed recently" to a directory. Elixir resolves natively by module, name and
+arity (thanks @henry-hz), `--scip` reads scip-java indexes (thanks @dpunosevac), and a `file:name` selector no
+longer answers with a definition from another file (thanks @andriytyurnikov).
+*Also thanks to @antoleod (a first contribution) and @heliocipher (the README rewrite).*
+
+**ripwire 0.6.0 — out now.** Kotlin and Dart bring it to 24 vendored grammars, and Ruby now reads the dependencies a
+Rails application actually has: superclasses, mixins, `autoload`, and the constant receivers an autoloader loads
+through. On llvm-project — 182,555 files — the cold parse drops from 194 s to 156 s of CPU. Declined calls, derailed parses
+and cut answers now say so, instead of returning a quiet zero.
+*Thanks to @xCatG (Kotlin), @calvinchengx (Dart), @andriytyurnikov (Ruby dependencies), @AnkitArya and
+@ashutoshsinghpr7 (Hermes), @s0undt3ch and @PollyBot13. Reports from @snrmwg, @mariadb-KyleHutchinson and @YogevKr.*
+
+Every release, with its measurements and its caveats, is in **[CHANGELOG.md](CHANGELOG.md)** — that file is the
+record, and this line is only the pointer to it.
 
 ---
 

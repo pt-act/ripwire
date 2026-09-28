@@ -277,6 +277,43 @@ if [ -x "$REALBIN" ]; then
     OUT3I3="$( printf '%s' "$SS_NONGIT" | PATH="$WITH_REAL" TMPDIR="$T3I3" bash "$HOOK" --session-start )"; RC3I3=$?
     [ "$RC3I3" -eq 0 ] && [ -z "$OUT3I3" ] && ok "SessionStart in non-git dir: silent" \
         || no "SessionStart in non-git dir: exit=$RC3I3 out=[$OUT3I3]"
+    # ── (3i2) routehookcheck O11's shape (1cd00d4d), applied to THIS hook: `git rev-parse
+    # --is-inside-work-tree` prints `false` WITH exit status 0 in a bare repository and inside a work
+    # tree's own .git directory. The route hooks were fixed to read the ANSWER, not only the exit
+    # status; the session-start primer at hooks/ripwire-nudge.sh:~1163 still read only the status, so a
+    # session started there still ran `ripwire wrap claude` and could emit the primer. RED on the
+    # status-only guard: both cwds below would print the wrap blurb (or at least fail to stay silent).
+    T3I4B="$TMP/t3i4bare"; mkdir -p "$T3I4B"
+    SS_BARE_GIT="$TMP/t3i4bare.git"; git init -q --bare "$SS_BARE_GIT"
+    SS_BARE_JSON='{"session_id":"ssbare","cwd":"'"$SS_BARE_GIT"'","source":"startup"}'
+    OUT3I4="$( printf '%s' "$SS_BARE_JSON" | PATH="$WITH_REAL" TMPDIR="$T3I4B" bash "$HOOK" --session-start )"; RC3I4=$?
+    [ "$RC3I4" -eq 0 ] && [ -z "$OUT3I4" ] && ok "SessionStart in a bare repository: silent (rev-parse prints false there)" \
+        || no "SessionStart in a bare repository: exit=$RC3I4 out=[$OUT3I4]"
+    T3I4D="$TMP/t3i4dotgit"; mkdir -p "$T3I4D"
+    SS_DOTGIT_JSON='{"session_id":"ssdotgit","cwd":"'"$REPO/.git"'","source":"startup"}'
+    OUT3I4D="$( printf '%s' "$SS_DOTGIT_JSON" | PATH="$WITH_REAL" TMPDIR="$T3I4D" bash "$HOOK" --session-start )"; RC3I4D=$?
+    [ "$RC3I4D" -eq 0 ] && [ -z "$OUT3I4D" ] && ok "SessionStart in a work tree's own .git dir: silent (rev-parse prints false there)" \
+        || no "SessionStart in a work tree's own .git dir: exit=$RC3I4D out=[$OUT3I4D]"
+    # ── (3i3) train20-cr C3: routehookcheck O11's inherited-GIT_DIR shape, applied to THIS hook. With GIT_DIR
+    # exported (alone, or with GIT_WORK_TREE naming an ancestor of cwd), `git -C "$dir" rev-parse
+    # --is-inside-work-tree` answers for THAT repository and prints `true` in a non-git cwd, so the primer
+    # fired there. RED on the hook without the reset the two route hooks already had.
+    for ss_case in "GIT_DIR" "GIT_DIR and an ancestor GIT_WORK_TREE"; do
+        ss_env=( "GIT_DIR=$REPO/.git" )
+        [ "$ss_case" = "GIT_DIR" ] || ss_env+=( "GIT_WORK_TREE=$TMP" )
+        T3I5="$TMP/t3i5.${#ss_env[@]}"; mkdir -p "$T3I5"
+        SS_ENV_JSON='{"session_id":"ssgitenv'"${#ss_env[@]}"'","cwd":"'"$NONREPO"'","source":"startup"}'
+        OUT3I5="$( printf '%s' "$SS_ENV_JSON" | env PATH="$WITH_REAL" TMPDIR="$T3I5" "${ss_env[@]}" bash "$HOOK" --session-start )"; RC3I5=$?
+        [ "$RC3I5" -eq 0 ] && [ -z "$OUT3I5" ] && ok "SessionStart in a non-git dir with an inherited $ss_case: silent" \
+            || no "SessionStart in a non-git dir with an inherited $ss_case: exit=$RC3I5 out=[$( printf '%s' "$OUT3I5" | head -c 160 )]"
+    done
+    # positive control: a real work tree cwd still gets the primer (proves the stub/binary reaches this far)
+    T3I4P="$TMP/t3i4pos"; mkdir -p "$T3I4P"
+    SS_POS_JSON='{"session_id":"sspos","cwd":"'"$REPO"'","source":"startup"}'
+    OUT3I4P="$( printf '%s' "$SS_POS_JSON" | PATH="$WITH_REAL" TMPDIR="$T3I4P" bash "$HOOK" --session-start )"; RC3I4P=$?
+    [ "$RC3I4P" -eq 0 ] && printf '%s' "$OUT3I4P" | grep -q 'Do NOT open a file you have not located first' \
+        && ok "SessionStart positive control: a real work tree still gets the primer" \
+        || no "SessionStart positive control: exit=$RC3I4P out=[$( printf '%s' "$OUT3I4P" | head -c 160 )] — the bare/.git arms above prove nothing"
 else
     echo "  SKIP  SessionStart checks (no real binary at $REALBIN)"
 fi
@@ -1545,6 +1582,16 @@ sweep_run "$LW3" "$TW3" '{"session_id":"tagnonrepo","cwd":"'"$NONREPO"'","tool_n
 [ "$( meterrowget "$LW3" 1 tag )" = "nonrepo" ] \
     && ok "TAG3 tag: outside a repo the tag still falls back to the directory basename" \
     || no "TAG3 tag: non-repo reported tag=[$( meterrowget "$LW3" 1 tag )], expected nonrepo"
+# TAG3b (train20-cr C3, the PreToolUse half): the same non-repo cwd, with the caller exporting GIT_DIR at another
+# repository. `git -C "$dir" rev-parse --show-toplevel --git-common-dir` then answers for THAT repository (the cwd
+# as its top level, $REPO/.git as its common dir), so the row was tagged `repo` and the call counted as in-repo.
+# RED on the hook without meter_set_repo's reset of git's inherited repository-selection variables.
+TW3B="$TMP/ttag3b"; mkdir -p "$TW3B"; LW3B="$TMP/tag3b.jsonl"
+sweep_run "$LW3B" "$TW3B" '{"session_id":"tagnonrepoenv","cwd":"'"$NONREPO"'","tool_name":"Grep","tool_input":{"pattern":"needle"}}' \
+    GIT_DIR="$REPO/.git" >/dev/null 2>&1
+[ "$( meterrowget "$LW3B" 1 tag )" = "nonrepo" ] \
+    && ok "TAG3b tag: a non-repo cwd with an inherited GIT_DIR still tags as its own basename" \
+    || no "TAG3b tag: non-repo cwd with an inherited GIT_DIR reported tag=[$( meterrowget "$LW3B" 1 tag )], expected nonrepo"
 # The SessionStart path derives the tag too, and derived it separately — a fix applied to one and not
 # the other would split a session's own rows across two tags.
 TW4="$TMP/ttag4"; mkdir -p "$TW4"; LW4="$TMP/tag4.jsonl"
