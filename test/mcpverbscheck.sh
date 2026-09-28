@@ -829,13 +829,26 @@ for verb in for explore; do
     OUT="$( for_twins_budget_page "$verb" )"
     case "$OUT" in
         "<sigs "*)
-            Q=0; for k in shown= total= capped= has_more= next_offset= tier=; do
+            Q=0; for k in shown= total= capped= has_more= next_offset= tier= budget_tokens= est_tokens=; do
                 case "$OUT" in *"$k"*) ;; *) Q=1 ;; esac
             done
-            if [ "$Q" = 0 ]; then
-                ok "(6e) MCP $verb {budget_tokens, limit} serves the candidate page (quintet + tier)"
+            # #294 review (mcpverbscheck arm hardening): the page must BUDGET-HONEST — est_tokens
+            # numeric and within the stated budget_tokens (or the page discloses over_ceiling="1",
+            # the pathological-task case). Parsed, not substring-matched.
+            BUD_OK=0
+            echo "$OUT" | python3 -c '
+import re, sys
+t = sys.stdin.read()
+m = re.search( r"budget_tokens=\"(\d+)\"", t )
+e = re.search( r"est_tokens=\"(\d+)\"", t )
+over = re.search( r"over_ceiling=\"1\"", t )
+ok = m and e and ( int( e.group( 1 ) ) <= int( m.group( 1 ) ) or over )
+sys.exit( 0 if ok else 1 )
+' && BUD_OK=1
+            if [ "$Q" = 0 ] && [ "$BUD_OK" = 1 ]; then
+                ok "(6e) MCP $verb {budget_tokens, limit} serves the candidate page (quintet + tier + est_tokens within budget_tokens)"
             else
-                no "(6e) MCP $verb served a <sigs page but the quintet/tier is incomplete: ${OUT:0:120}"
+                no "(6e) MCP $verb served a <sigs page but the quintet or the budget honesty is incomplete (est_tokens<=budget_tokens or over_ceiling): ${OUT:0:120}"
             fi ;;
         "<files "*)
             no "(6e) MCP $verb {budget_tokens, limit} served the BUDGETLESS FILE PAGE with budget_tokens ignored — accept-and-ignore; the budgeted window must serve the candidate page" ;;

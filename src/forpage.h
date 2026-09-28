@@ -166,7 +166,8 @@ inline std::string forWidenNext( std::string_view task )
 // gains a paging attribute). The UN-PAGED bundle the callers serve otherwise is untouched and
 // byte-identical: its resume point is its own <sigs shown=>.
 inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::vector<float>& lensRank, const rw::AdaptiveCut& forCut,
-                                 std::string_view task, std::string_view routeNote, std::string_view rootArg,
+                                 std::string_view task, std::string_view verbName,   // "--for"/"--pack-task": the handle + r=1 hint name THEIR verb (#294 review)
+                                 std::string_view routeNote, std::string_view rootArg,
                                  rw::RedactCounts* redactPtr, std::string_view atStamp,
                                  std::size_t tokenBudget, int pageLimit, int pageOffset )
 {
@@ -229,7 +230,9 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
                             /*rankAdaptivePayload=*/true,
                             sigsBytesBudget,                          // H1 ladder over the page
                             nullptr, rootArg,
-                            /*hasRelevanceFloor=*/true, nullptr );
+                            /*hasRelevanceFloor=*/true, nullptr,
+                            /*shownIdsOut=*/nullptr, /*cappedOut=*/nullptr, /*topRowNext=*/{}, /*cutOut=*/nullptr,
+                            std::uint32_t( win.begin ) );             // rankBase (LAST param): continuation rows carry their GLOBAL r= (#294 review)
             const rw::MemoryStreamBytes block = stream.finish();
             if( !block.isWhole )
             {
@@ -315,59 +318,103 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
         // std::string assembly, NOT a fixed char buffer: the task attribute is caller-controlled
         // (an escaped 300-char task overflows any sane fixed size, and the first cut of this page
         // truncated has_more= mid-attribute at 160 bytes — a malformed document shipped as
-        // output). Unbounded is the only honest size here.
-        std::string head = "<sigs task=\"" + std::string( taskAttr ) + "\" route=\"" + std::string( routeAttr )
-                         + "\" shown=\"" + std::to_string( shown ) + "\" total=\"" + std::to_string( candidateTotal )
-                         // above_cliff (issue #294 ruling, suggestion 1): the head-tier candidate count,
-                         // next to total= — an agent decides from page 1 whether the below-cliff
-                         // remainder is worth fetching, no arithmetic. cliffRank is 1-based (the rank
-                         // AT the boundary), so the count of head-tier candidates is cliffRank-1; the
-                         // same boundary tier= uses, one definition.
-                         + "\" above_cliff=\"" + std::to_string( forCut.cliffRank > 0 ? forCut.cliffRank - 1 : 0 )
-                         + "\" capped=\"" + ( shown < candidateTotal ? "1" : "0" )
-                         + "\" has_more=\"" + ( win.end < candidateTotal ? "1" : "0" )
-                         + "\" next_offset=\"" + std::to_string( win.end )
-                         + "\" offset=\"" + std::to_string( win.begin )
-                         + "\" limit=\"" + std::to_string( pageLimit > 0 ? pageLimit : 0 )
-                         + "\" tier=\"" + ( below ? "below-cliff" : "head" ) + "\"";
+        // output). Unbounded is the only honest size here. THE #294 REVIEW RESTRUCTURE: head, handle
+        // and tail are LAMBDAS now, so the budget-enforcement pass below can trim trailing rows and
+        // re-derive the page's own arithmetic (shown/next_offset/has_more/next=) from what actually
+        // shipped — one construction, reused verbatim by every pass.
+        const auto buildHead = [ & ]( std::size_t shownNow, std::size_t nextOff ) {
+            return "<sigs task=\"" + std::string( taskAttr ) + "\" route=\"" + std::string( routeAttr )
+                 + "\" shown=\"" + std::to_string( shownNow ) + "\" total=\"" + std::to_string( candidateTotal )
+                 // above_cliff (issue #294 ruling, suggestion 1): the head-tier candidate count,
+                 // next to total= — an agent decides from page 1 whether the below-cliff
+                 // remainder is worth fetching, no arithmetic. cliffRank is 1-based (the rank
+                 // AT the boundary), so the count of head-tier candidates is cliffRank-1; the
+                 // same boundary tier= uses, one definition.
+                 + "\" above_cliff=\"" + std::to_string( forCut.cliffRank > 0 ? forCut.cliffRank - 1 : 0 )
+                 + "\" capped=\"" + ( shownNow < candidateTotal ? "1" : "0" )
+                 + "\" has_more=\"" + ( nextOff < candidateTotal ? "1" : "0" )
+                 + "\" next_offset=\"" + std::to_string( nextOff )
+                 + "\" offset=\"" + std::to_string( win.begin )
+                 + "\" limit=\"" + std::to_string( pageLimit > 0 ? pageLimit : 0 )
+                 + "\" tier=\"" + ( below ? "below-cliff" : "head" ) + "\"";
+        };
         // THE PASTEABLE CONTINUATION HANDLE — the file page's next= contract (forpage.h's own
         // forPageInvocation shape): the argv that walks to next_offset. Dropped entirely past
         // kNextAttrMaxBytes (a hint that pastes wrong is worse than no hint); the machine
         // next_offset= always remains. listingpagingcheck arm (G2) pins the pair together.
-        std::string inv = nextFlag( "--for=", task );
-        inv += " --token-budget=" + std::to_string( tokenBudget );
-        if( pageLimit > 0 ) { inv += " --limit=" + std::to_string( pageLimit ); }
-        inv += " --offset=" + std::to_string( win.end );
-        if( inv.size() > kNextAttrMaxBytes ) { inv.clear(); }
-        const std::string nextAttr = nextAttrXml( inv );
+        const auto buildNextAttr = [ & ]( std::size_t nextOff ) {
+            std::string inv = nextFlag( verbName, task );   // THEIR verb: --pack-task pages hand back --pack-task=, so pasting continues the same verb (#294 review)
+            inv += " --token-budget=" + std::to_string( tokenBudget );
+            if( pageLimit > 0 ) { inv += " --limit=" + std::to_string( pageLimit ); }
+            inv += " --offset=" + std::to_string( nextOff );
+            if( inv.size() > kNextAttrMaxBytes ) { inv.clear(); }
+            return nextAttrXml( inv );
+        };
         // next_tier (ruling, suggestion 2): the tier the CONTINUATION page will carry, so a consumer
         // can skip the below-cliff remainder deliberately rather than by accident. Fixed literals —
         // no escaping needed. Always present beside next= (the boundary is knowable on every page).
-        const std::string nextTierAttr = std::string( " next_tier=\"" ) + ( ( forCut.cliffRank > 0 && win.end >= forCut.cliffRank ) ? "below-cliff" : "head" ) + "\"";
+        const auto buildNextTierAttr = [ & ]( std::size_t nextOff ) {
+            return std::string( " next_tier=\"" ) + ( ( forCut.cliffRank > 0 && nextOff >= forCut.cliffRank ) ? "below-cliff" : "head" ) + "\"";
+        };
         // est_tokens is MEASURED from the page's own final bytes; the tail's digit count feeds
         // back into the total, so one re-derivation closes the loop (it converges immediately —
         // a digit count change moves the total by a byte, ~0.42 tokens).
-        std::size_t       estTokens = std::size_t( double( head.size() + rows.size() + 64 ) / kMinBytesPerToken );
-        std::string       tail;
-        std::size_t       tailLen   = 0;
-        for( int pass = 0; pass < 2; ++pass )
+        const auto buildTail = [ & ]( const std::string& h, const std::string& r, bool overCeiling, std::size_t nextOff ) {
+            std::size_t est = std::size_t( double( h.size() + r.size() + 96 ) / kMinBytesPerToken );
+            std::string t;
+            for( int pass = 0; pass < 3; ++pass )
+            {
+                t = " est_tokens=\"" + std::to_string( est )
+                  + "\" budget_tokens=\"" + std::to_string( tokenBudget )
+                  + "\" root=\"" + std::string( rootAttr ) + "\"" + buildNextAttr( nextOff ) + buildNextTierAttr( nextOff )
+                  + ( overCeiling ? " over_ceiling=\"1\"" : std::string() )
+                  + ( atStamp.empty() ? std::string() : " at=\"" + std::string( escapeXml( atStamp, escAt ) ) + "\"" ) + ">";
+                const std::size_t fin = std::size_t( double( h.size() + t.size() + r.size() ) / kMinBytesPerToken );
+                if( fin == est ) { break; }
+                est = fin;
+            }
+            return std::pair<std::string, std::size_t>( t, est );
+        };
+        // nextOff is win.begin + shown — NEVER win.end: when the H1 ladder trimmed rows within the
+        // page, shown < window size, and the honest continuation resumes at the first NEVER-SERVED
+        // candidate; a next_offset of win.end would silently skip the trimmed rows (the seam contract
+        // (G3) walks gaplessly at any budget because of this). Identical to win.end when nothing trimmed.
+        const std::size_t nextOff = win.begin + shown;
+        std::string headStr = buildHead( shown, nextOff );
+        auto [ tailStr, estTokens ] = buildTail( headStr, rows, /*overCeiling=*/false, nextOff );
+        pageOut.assign( headStr ).append( tailStr ).append( rows );
+        // #294 REVIEW (enforcement + over_ceiling): a page IS an answer under the budget. The
+        // H1 ladder already trimmed WITHIN the page; if the assembled page still exceeds the
+        // budget (the escaped task in the head can outgrow the splice reserve), trim trailing
+        // WHOLE rows — the tail-first-drop policy handoff.h uses — and re-derive the page's own
+        // arithmetic from what shipped, so a stdout-only consumer reads the truth. If even an
+        // empty page cannot fit (a pathological task length), splice over_ceiling="1" — the
+        // same marker the un-paged bundle serves — and keep the stderr note.
+        if( tokenBudget > 0 && estTokens > std::size_t( tokenBudget ) )
         {
-            tail = " est_tokens=\"" + std::to_string( estTokens )
-                 + "\" budget_tokens=\"" + std::to_string( tokenBudget )
-                 + "\" root=\"" + std::string( rootAttr ) + "\"" + nextAttr + nextTierAttr
-                 + ( atStamp.empty() ? std::string() : " at=\"" + std::string( escapeXml( atStamp, escAt ) ) + "\"" ) + ">";
-            tailLen = tail.size();
-            const std::size_t finalEst = std::size_t( double( head.size() + tailLen + rows.size() ) / kMinBytesPerToken );
-            if( finalEst == estTokens ) { break; }
-            estTokens = finalEst;
-        }
-        pageOut.assign( head ).append( tail ).append( rows );
-        if( estTokens > std::size_t( tokenBudget ) )
-        {
-            // the honest ceiling contract, same shape the bundle's over_ceiling= clause serves:
-            // a page IS an answer under the same budget; say so, never silently exceed it.
-            rw::emitTo( stderr, "ripwire: for-page est_tokens={} exceeds the stated budget={} (the splice "
-                               "reserve was too small) — please report the command line\n", estTokens, tokenBudget );
+            std::size_t shownNow = shown;
+            std::string rowsNow   = rows;
+            while( shownNow > 0 )
+            {
+                const std::size_t lastClose = rowsNow.rfind( "</d>" );
+                if( lastClose == std::string::npos ) { break; }
+                rowsNow = rowsNow.substr( 0, lastClose ) + "</sigs>";
+                --shownNow;
+                const std::size_t nextOff = win.begin + shownNow;
+                headStr = buildHead( shownNow, nextOff );
+                auto [ t2, e2 ] = buildTail( headStr, rowsNow, /*overCeiling=*/false, nextOff );
+                pageOut.assign( headStr ).append( t2 ).append( rowsNow );
+                if( e2 <= std::size_t( tokenBudget ) ) { break; }
+            }
+            if( std::size_t( double( pageOut.size() ) / kMinBytesPerToken ) > std::size_t( tokenBudget ) )
+            {
+                headStr = buildHead( 0, win.begin );
+                auto [ tZ, eZ ] = buildTail( headStr, "</sigs>", /*overCeiling=*/true, win.begin );
+                pageOut.assign( headStr ).append( tZ ).append( "</sigs>" );
+                rw::emitTo( stderr, "ripwire: for-page est_tokens={} exceeds the stated budget={} even with zero rows "
+                                   "(the escaped task outgrew the page shell) — the page is served empty with over_ceiling=1; please report the command line\n",
+                            eZ, tokenBudget );
+            }
         }
     }
     return pageOut;

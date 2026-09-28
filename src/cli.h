@@ -2626,9 +2626,9 @@ inline constexpr char kHelpTail[] =
         "                               Any verb NOT in that list REFUSES both flags (exit 1) rather than accepting and\n"
         "                               ignoring them: budget/top-k verbs (--recall/--pack-task/--from-trace/\n"
         "                               --expand/--outline/--pack-signatures/--format=candidates) are shaped by\n"
-        "                               --top-k/--max-tokens/--token-budget, not a page (--for's bare bundle is shaped by\n"
-        "                               --token-budget the same way, and takes --limit/--offset only as its file page, where\n"
-        "                               the budget flags are refused in turn); the rest (--path/--connect/\n"
+        "                               --token-budget the same way; --for/--pack-task take --limit/--offset as their FILE"
+        "                               page, where the budget flags are refused in turn, or beside --token-budget as the"
+        "                               BUDGETED-BUNDLE CANDIDATE PAGE (the <sigs> window over the ranked candidates, their resumable continuation: budget + window together); the rest (--path/--connect/\n"
         "                               --around/--exemplar/--report/--mermaid/--map-diff/--metrics and the default map)\n"
         "                               answer with a single fixed-shape result that has no row list to window at all.\n"
         "    --exclude=SUBSTR           drop matching paths (repeatable)   --ignore-tests\n"
@@ -4956,8 +4956,18 @@ inline void validateConfig( Config& c ) noexcept
     // every bundle-shaping flag beside it would be accepted-and-ignored, the named failure family this file
     // refuses everywhere else (§H4). Named one at a time, so the remedy is the flag to drop. --top-k,
     // --max-tokens and --token-budget are refused by validateShapingFlagsHonored (the page is a paging member).
-    if( !c.forTask.empty() && ( c.pageLimit > 0 || c.pageOffset > 0 ) )
+    // #294 review (verbs_for.h:3824): --pack-task beside a budgeted window serves the CANDIDATE page,
+    // and the candidate page (like the file page) is a fixed <sigs>/<files> shape — bundle-shaping flags
+    // would be accepted-and-ignored there too. Both pages refuse them; the message names the page that
+    // was selected, so the remedy (drop the flag, or the window) reads correctly.
+    const bool forFilePageSelected  = !c.forTask.empty() && c.tokenBudget == 0 && ( c.pageLimit > 0 || c.pageOffset > 0 );
+    const bool forCandidateSelected = ( ( !c.forTask.empty() || c.packTaskFlag ) && c.tokenBudget != 0
+                                        && ( c.pageLimit > 0 || c.pageOffset > 0 ) );
+    if( forFilePageSelected || forCandidateSelected )
     {
+        const char* const pageName = forFilePageSelected
+            ? "--for --limit/--offset is the file-grain widening page (one <f> row per file, its own <files> document)"
+            : "--for/--pack-task --token-budget with --limit/--offset is the budgeted-bundle candidate page (one fixed <sigs> window, its own resumable document)";
         struct PageShapeFlag { const char* name; bool set; };
         const PageShapeFlag shapeFlags[] = {
             { "--json",              c.json },            { "--format=candidates", c.candidates },
@@ -4970,7 +4980,7 @@ inline void validateConfig( Config& c ) noexcept
         {
             if( f.set )
             {
-                rw::emitTo( stderr, "ripwire: --for --limit/--offset is the file-grain widening page (one <f> row per file, its own <files> document) — it has no bundle for {} to shape, so the flag is refused rather than ignored: drop {} for the page, or drop --limit/--offset for the bundle\n", f.name, f.name );
+                rw::emitTo( stderr, "ripwire: {} — it has no bundle for {} to shape, so the flag is refused rather than ignored: drop {} for the page, or drop the window for the bundle\n", pageName, f.name, f.name, f.name );
                 c.ok = false;
             }
         }
