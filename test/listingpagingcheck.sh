@@ -579,6 +579,7 @@ for name in ("g_budget_p0", "g_budget_p3"):
     o = raw.find( "<sigs" );  oend = raw.find( ">", o )
     opentag = raw[ o : oend ] if o >= 0 and oend > o else ""
     m = _re.search(r' next="([^"]*)"', opentag);  n = _re.search(r' next_offset="(\d+)"', opentag)
+    t = _re.search(r' next_tier="([^"]*)"', opentag)   # ruling suggestion 2: the tier the NEXT page carries
     if m: next_attr = m.group(1)
     if n: next_offset_attr = n.group(1)
     if next_attr and next_offset_attr:
@@ -587,6 +588,10 @@ for name in ("g_budget_p0", "g_budget_p3"):
         else:
             print(f"  PASS  (G2) next= names the exact continuation (--offset={next_offset_attr})")
         break
+if t and t.group(1) not in ("head", "below-cliff"):
+    problems.append(f"next_tier={t.group(1)!r} is not one of the two tier values")
+if not t and next_attr:
+    problems.append("next= present but next_tier= absent — the ruling's suggestion 2 (the handle must make the next page's tier visible)")
 if not next_attr:
     problems.append("the candidate page root carries no next= — the resumable argv handle the file page's next= contract serves (next_offset= alone is machine-only)")
 
@@ -602,6 +607,94 @@ sys.exit(1 if problems else 0)
 PY
 [ $? = 0 ] && ok '(G) budgeted-bundle pages are the exact continuation (candidates, rank order, no overlap)' \
                || no '(G) the budgeted-bundle continuation seam (upstream issue #294) does not hold — see FAIL lines above'
+
+# ── (G3) END-TO-END WALK (issue #294 ruling, suggestion 5): every page concatenated equals the full ──
+# ranked candidate list — no gap, no overlap, same order — and the tier sequence is head* then
+# below-cliff* (exactly one boundary). Walked at a budget large enough that no within-page trim fires,
+# so the row NAMES are the ranked set itself. The un-paged bundle's served rows (top-40 of the same
+# order, same budget) must be a PREFIX of the walk.
+echo "=== (G3) end-to-end walk: all pages concatenated == the full ranked candidate list ==="
+WALK_BUDGET=100000
+# on the big src/ corpus: enough candidates (878 for this query) that the walk spans multiple pages
+# and crosses the tier boundary — the root corpus' 5 candidates fit one page and prove nothing about seams.
+run "$ROOT/src" g3_bundle --for="rank symbols" --token-budget=$WALK_BUDGET
+offset=0; page=0
+while [ "$page" -lt 12 ]; do
+    run "$ROOT/src" "g3_walk_$page" --for="rank symbols" --token-budget=$WALK_BUDGET --limit=200 --offset=$offset
+    shown="$( attr "$TMP/g3_walk_$page" sigs shown )"; has_more="$( attr "$TMP/g3_walk_$page" sigs has_more )"
+    nextoff="$( attr "$TMP/g3_walk_$page" sigs next_offset )"; tier="$( attr "$TMP/g3_walk_$page" sigs tier )"
+    total="$( attr "$TMP/g3_walk_$page" sigs total )"
+    [ -n "$shown" ] || { no "(G3) walk page $page produced no parseable root"; break; }
+    echo "$tier" >> "$TMP/g3_tiers.txt"
+    echo "$shown" >> "$TMP/g3_shown.txt"
+    # rows carry n= AFTER other attributes (<d l=... n=...) — extract per-row, not per-line prefix
+    python3 -c '
+import re, sys
+raw = open( sys.argv[1], encoding="utf-8", errors="replace" ).read()
+# candidate identity is the (file, line, name) TRIPLE — same-name definitions are distinct
+# candidates even in ONE file (DYNMAP_DEFINE_RANK_32 sits at two lines of dynamic_map.hpp),
+# so name or (file, name) alone false-flags them as seam overlap. n=/p=/l= may sit in any
+# order on the tag — three sub-extracts per tag.
+for tag in re.finditer( r"<d\s[^>]*>", raw ):
+    t = tag.group( 0 )
+    n = re.search( r"\sn=\"([^\"]*)\"", t )
+    p = re.search( r"\sp=\"([^\"]*)\"", t )
+    l = re.search( r"\sl=\"([^\"]*)\"", t )
+    print( ( p.group( 1 ) if p else "?" ) + "\x1f" + ( l.group( 1 ) if l else "?" ) + "\x1f" + ( n.group( 1 ) if n else "?" ) )
+' "$TMP/g3_walk_$page" >> "$TMP/g3_rows.txt"
+    page=$(( page + 1 ))
+    [ "$has_more" = "1" ] || break
+    offset="$nextoff"
+done
+walk_pages="$page"
+
+python3 - "$TMP" "$walk_pages" "$total" <<'PY'
+import os, sys
+tmp, pages, total = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+problems = []
+rows = [ l.rstrip("\n") for l in open(os.path.join(tmp, "g3_rows.txt")) if l.strip() ]
+tiers = [ l.rstrip("\n") for l in open(os.path.join(tmp, "g3_tiers.txt")) if l.strip() ]
+shown_sum = sum( int( x ) for x in open(os.path.join(tmp, "g3_shown.txt")) if x.strip() )
+dups = len(rows) - len(set(rows))
+if dups:
+    problems.append(f"walk: {dups} duplicate candidates across pages — a row served twice is a page that lies")
+# the tiling measure is the pages' own shown= arithmetic (candidates SERVED); the <d n= extraction
+# counts NAMED-DEF rows — a pseudo-symbol (e.g. <file-scope>) is counted as served but emits no row,
+# so shown-sum == total is the contract, and the row list tiles the named-def subset in order.
+if shown_sum != total:
+    problems.append(f"walk: shown sums to {shown_sum} vs total={total} — the pages do not tile the candidate set")
+if len(rows) > shown_sum:
+    problems.append(f"walk: {len(rows)} named rows exceed the {shown_sum} served candidates")
+# tier sequence: all head pages precede all below-cliff pages (exactly one boundary)
+seen_below = False
+for i, t in enumerate(tiers):
+    if t not in ("head", "below-cliff"):
+        problems.append(f"walk page {i}: tier={t!r} is not one of the two values"); break
+    if t == "below-cliff": seen_below = True
+    elif seen_below:
+        problems.append(f"walk page {i}: tier=head AFTER a below-cliff page — the boundary moved mid-walk"); break
+# the un-paged bundle's served rows are a PREFIX of the walk (same order, same budget)
+bp = os.path.join(tmp, "g3_bundle")
+if os.path.exists(bp) and os.path.getsize(bp) > 0:
+    import re
+    raw = open(bp, encoding="utf-8", errors="replace").read()
+    bundle = []
+    for m in re.finditer( r'<d\s[^>]*>', raw ):
+        t = m.group( 0 )
+        n = re.search( r'\sn="([^"]*)"', t )
+        pp = re.search( r'\sp="([^"]*)"', t )
+        ll = re.search( r'\sl="([^"]*)"', t )
+        bundle.append( ( pp.group(1) if pp else "?" ) + "\x1f" + ( ll.group(1) if ll else "?" ) + "\x1f" + ( n.group(1) if n else "?" ) )
+    if rows[:len(bundle)] != bundle:
+        problems.append("the un-paged bundle's served rows are NOT a prefix of the walk — the page and the bundle answer different orders")
+    else:
+        print(f"  PASS  (G3) the un-paged bundle's {len(bundle)} rows are a prefix of the walk (same order)")
+for p_ in problems: print("  FAIL  " + p_)
+print(f"  ..    (G3) walked {pages} pages, {len(rows)} rows, total={total}, tiers: {' -> '.join(tiers)}")
+sys.exit(1 if problems else 0)
+PY
+[ $? = 0 ] && ok '(G3) every page concatenated == the full ranked candidate list (no gap, no overlap, one tier boundary)' \
+               || no '(G3) the end-to-end walk (issue #294 ruling, suggestion 5) does not hold — see FAIL lines above'
 
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit $fail

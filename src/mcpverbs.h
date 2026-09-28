@@ -1898,7 +1898,7 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
         {
             const AdaptiveCut cut = adaptiveCut( lensRank, 5, std::size_t( forTopN ), /*scanFullDistribution=*/true );
             return forCandidatePageDoc( ing, lensRank, cut, task, routeNoteOf( rc, shape, noRoute ), mcpRootArg,
-                                        redact, budgetTokens, page.limit, page.offset );
+                                        redact, gitstamp::stampAt( root ), budgetTokens, page.limit, page.offset );
         }
         const ForFilePage filePage = computeForFilePage( ing, lensRank, mcpEvidence );
         // PR #215 review item 4: this page composed "routed: " + rc.reason by hand and so answered in a spelling
@@ -4061,7 +4061,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
         {
             const AdaptiveCut cut = adaptiveCut( lr.rank, 5, std::size_t( kForLensDefaultTopN ), /*scanFullDistribution=*/true );
             return forCandidatePageDoc( ing, lr.rank, cut, task, lr.routeNote, mcpRootArg,
-                                        redact, budgetTokens, pageLimit, pageOffset );
+                                        redact, gitstamp::stampAt( root ), budgetTokens, pageLimit, pageOffset );
         }
         const ForFilePage filePage = computeForFilePage( ing, lr.rank, lr.evidence );
         const std::string pageRootOpen = ctxRootOpen( task, lr.routeNote, mcpRootArg );
