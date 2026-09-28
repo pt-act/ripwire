@@ -167,7 +167,8 @@ inline std::string forWidenNext( std::string_view task )
 // byte-identical: its resume point is its own <sigs shown=>.
 inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::vector<float>& lensRank, const rw::AdaptiveCut& forCut,
                                  std::string_view task, std::string_view routeNote, std::string_view rootArg,
-                                 rw::RedactCounts* redactPtr, std::size_t tokenBudget, int pageLimit, int pageOffset )
+                                 rw::RedactCounts* redactPtr, std::string_view atStamp,
+                                 std::size_t tokenBudget, int pageLimit, int pageOffset )
 {
     using namespace rw;   // the file's idiom: function-scoped (verbs_for.h:88 and five more)
     // the ranked candidate order: ALL ids sorted (score desc, id asc) — the same total order
@@ -251,6 +252,7 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
         std::vector<char> escTask;  const std::string_view taskAttr  = escapeXml( task, escTask );
         std::vector<char> escRoute; const std::string_view routeAttr = escapeXml( routeNote, escRoute );
         std::vector<char> escRoot;  const std::string_view rootAttr  = escapeXml( rootArg, escRoot );
+        std::vector<char> escAt;    // the degrade page's own at= scratch (one buffer per attribute)
         const bool belowDegrade = forCut.cliffRank > 0 && win.begin >= forCut.cliffRank;
         std::string degrade = "<sigs task=\"" + std::string( taskAttr ) + "\" route=\"" + std::string( routeAttr )
                              + "\" shown=\"0\" total=\"" + std::to_string( candidateTotal )
@@ -260,10 +262,12 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
                              + "\" offset=\"" + std::to_string( win.begin )
                              + "\" limit=\"" + std::to_string( pageLimit > 0 ? pageLimit : 0 )
                              + "\" tier=\"" + ( belowDegrade ? "below-cliff" : "head" )
+                             + "\" above_cliff=\"" + std::to_string( forCut.cliffRank > 0 ? forCut.cliffRank - 1 : 0 )
                              + "\" reason=\"" + ( forPageRender.why == ForPageRender::DisclosureWhy::ChargeStreamTorn
                                                     ? "sigs-charge-stream-torn" : "sigs-charge-stream-refused" )
                              + "\" est_tokens=\"0\" budget_tokens=\"" + std::to_string( tokenBudget )
-                             + "\" root=\"" + std::string( rootAttr ) + "\"></sigs>";
+                             + "\" root=\"" + std::string( rootAttr )
+                             + ( atStamp.empty() ? std::string() : " at=\"" + std::string( escapeXml( atStamp, escAt ) ) + "\"" ) + "></sigs>";
         const std::string est = " est_tokens=\"" + std::to_string( std::size_t( double( degrade.size() ) / kMinBytesPerToken ) ) + "\"";
         const std::size_t estAt = degrade.find( " est_tokens=\"0\"" );
         degrade.replace( estAt, est.size(), est );
@@ -299,6 +303,7 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
         std::vector<char> escTask;    // ONE scratch buffer PER attribute: escapeXml appends to the
         std::vector<char> escRoute;    // buffer and returns a view of it, so two calls sharing one
         std::vector<char> escRoot;    // buffer inside one emit call's argument list race on realloc and
+        std::vector<char> escAt;      // one buffer per attribute (the shared-buffer bug, see escTask)
         const std::string_view taskAttr  = escapeXml( task, escTask );      // mangle each other.
         const std::string_view routeAttr = escapeXml( routeNote, escRoute );
         const std::string_view rootAttr  = escapeXml( std::string_view( rootArg ), escRoot );
@@ -313,6 +318,12 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
         // output). Unbounded is the only honest size here.
         std::string head = "<sigs task=\"" + std::string( taskAttr ) + "\" route=\"" + std::string( routeAttr )
                          + "\" shown=\"" + std::to_string( shown ) + "\" total=\"" + std::to_string( candidateTotal )
+                         // above_cliff (issue #294 ruling, suggestion 1): the head-tier candidate count,
+                         // next to total= — an agent decides from page 1 whether the below-cliff
+                         // remainder is worth fetching, no arithmetic. cliffRank is 1-based (the rank
+                         // AT the boundary), so the count of head-tier candidates is cliffRank-1; the
+                         // same boundary tier= uses, one definition.
+                         + "\" above_cliff=\"" + std::to_string( forCut.cliffRank > 0 ? forCut.cliffRank - 1 : 0 )
                          + "\" capped=\"" + ( shown < candidateTotal ? "1" : "0" )
                          + "\" has_more=\"" + ( win.end < candidateTotal ? "1" : "0" )
                          + "\" next_offset=\"" + std::to_string( win.end )
@@ -329,6 +340,10 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
         inv += " --offset=" + std::to_string( win.end );
         if( inv.size() > kNextAttrMaxBytes ) { inv.clear(); }
         const std::string nextAttr = nextAttrXml( inv );
+        // next_tier (ruling, suggestion 2): the tier the CONTINUATION page will carry, so a consumer
+        // can skip the below-cliff remainder deliberately rather than by accident. Fixed literals —
+        // no escaping needed. Always present beside next= (the boundary is knowable on every page).
+        const std::string nextTierAttr = std::string( " next_tier=\"" ) + ( ( forCut.cliffRank > 0 && win.end >= forCut.cliffRank ) ? "below-cliff" : "head" ) + "\"";
         // est_tokens is MEASURED from the page's own final bytes; the tail's digit count feeds
         // back into the total, so one re-derivation closes the loop (it converges immediately —
         // a digit count change moves the total by a byte, ~0.42 tokens).
@@ -339,7 +354,8 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
         {
             tail = " est_tokens=\"" + std::to_string( estTokens )
                  + "\" budget_tokens=\"" + std::to_string( tokenBudget )
-                 + "\" root=\"" + std::string( rootAttr ) + "\"" + nextAttr + ">";
+                 + "\" root=\"" + std::string( rootAttr ) + "\"" + nextAttr + nextTierAttr
+                 + ( atStamp.empty() ? std::string() : " at=\"" + std::string( escapeXml( atStamp, escAt ) ) + "\"" ) + ">";
             tailLen = tail.size();
             const std::size_t finalEst = std::size_t( double( head.size() + tailLen + rows.size() ) / kMinBytesPerToken );
             if( finalEst == estTokens ) { break; }
