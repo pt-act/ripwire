@@ -1897,7 +1897,7 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
         if( budgetTokens > 0 )
         {
             const AdaptiveCut cut = adaptiveCut( lensRank, 5, std::size_t( forTopN ), /*scanFullDistribution=*/true );
-            return forCandidatePageDoc( ing, lensRank, cut, task, routeNoteOf( rc, shape, noRoute ), mcpRootArg,
+            return forCandidatePageDoc( ing, lensRank, cut, task, "--for=", routeNoteOf( rc, shape, noRoute ), mcpRootArg,
                                         redact, gitstamp::stampAt( root ), budgetTokens, page.limit, page.offset );
         }
         const ForFilePage filePage = computeForFilePage( ing, lensRank, mcpEvidence );
@@ -4060,7 +4060,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
         if( budgetTokens > 0 )
         {
             const AdaptiveCut cut = adaptiveCut( lr.rank, 5, std::size_t( kForLensDefaultTopN ), /*scanFullDistribution=*/true );
-            return forCandidatePageDoc( ing, lr.rank, cut, task, lr.routeNote, mcpRootArg,
+            return forCandidatePageDoc( ing, lr.rank, cut, task, "--pack-task=", lr.routeNote, mcpRootArg,
                                         redact, gitstamp::stampAt( root ), budgetTokens, pageLimit, pageOffset );
         }
         const ForFilePage filePage = computeForFilePage( ing, lr.rank, lr.evidence );

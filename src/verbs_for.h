@@ -2217,11 +2217,11 @@ inline std::string renderForHdrRowsXml( const rw::IngestResult& ing, const std::
 // the CLI half of the shared page (forpage.h owns the doc): write it to stdout. One implementation,
 // three dialects — the CLI bundle verbs and the MCP twins all build the SAME document.
 inline int emitForCandidatePage( const rw::IngestResult& ing, const std::vector<float>& lensRank, const rw::AdaptiveCut& forCut,
-                                 std::string_view task, std::string_view routeNote, std::string_view rootArg,
+                                 std::string_view task, std::string_view verbName, std::string_view routeNote, std::string_view rootArg,
                                  rw::RedactCounts* redactPtr, std::string_view atStamp,
                                  std::size_t tokenBudget, int pageLimit, int pageOffset )
 {
-    const std::string doc = rw::forCandidatePageDoc( ing, lensRank, forCut, task, routeNote, rootArg,
+    const std::string doc = rw::forCandidatePageDoc( ing, lensRank, forCut, task, verbName, routeNote, rootArg,
                                                      redactPtr, atStamp, tokenBudget, pageLimit, pageOffset );
     std::fwrite( doc.data(), 1, doc.size(), stdout );
     return 0;
@@ -2451,10 +2451,14 @@ std::optional<int> runForLens( const MainDispatch& d )
         // resumable candidate page (shared inline; the un-paged bundle below stays byte-identical).
         if( cfg.tokenBudget != 0 && ( cfg.pageLimit > 0 || cfg.pageOffset > 0 ) )
         {
-            return emitForCandidatePage( ing, lensRank, forCut, cfg.forTask, routeNoteRaw, flRootArg,
+            // W3-N1/#294 review: the page redacts through packSignatures — the tally must be reported,
+            // exactly like the --json early return below (a redacted credential must never be silent).
+            const int pageRc = emitForCandidatePage( ing, lensRank, forCut, cfg.forTask, "--for=", routeNoteRaw, flRootArg,
                                          redactPtr,
                                          flSingleRoot ? std::string_view( gitstamp::stampAt( std::string( root ) ) ) : std::string_view(),
                                          cfg.tokenBudget, cfg.pageLimit, cfg.pageOffset );
+            reportRedactions( stderr, redactCounts );
+            return pageRc;
         }
         // L-W: coverage= rides the SAME sentence and the SAME byte exemption as confidence=/margin_pct= — but ONLY
         // on a THIN answer (owner decision 2026-09-12: present-only). The thin verdict is decided HERE, from the
@@ -3819,8 +3823,10 @@ std::optional<int> runPackTask( const MainDispatch& d )
         }
         const AdaptiveCut packCut = adaptiveCut( lr.rank, 5, std::size_t( cfg.packTopN > 0 ? cfg.packTopN : kForLensDefaultTopN ), true );
         const std::string packAtStamp = in.rootArg.empty() ? std::string() : gitstamp::stampAt( std::string( in.rootArg ) );
-        return emitForCandidatePage( ing, lr.rank, packCut, task, lr.routeNote, in.rootArg,
+        const int packPageRc = emitForCandidatePage( ing, lr.rank, packCut, task, "--pack-task=", lr.routeNote, in.rootArg,
                                      d.redactPtr, packAtStamp, cfg.tokenBudget, cfg.pageLimit, cfg.pageOffset );
+        reportRedactions( stderr, d.redactCounts );   // W3-N1/#294 review: the page redacts — the tally reports
+        return packPageRc;
     }
 
     // --partition=N: the FAN-OUT form. Same lens ranking, same PackTaskInputs, same
