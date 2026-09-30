@@ -1963,7 +1963,13 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
         if( budgetTokens > 0 )
         {
             const AdaptiveCut cut = adaptiveCut( lensRank, 5, std::size_t( forTopN ), /*scanFullDistribution=*/true );
-            return forCandidatePageDoc( ing, lensRank, cut, ForCandidatePageReq{ task, "--for=", routeNoteOf( rc, shape, noRoute ), mcpRootArg,
+            // #362 review, item 1+3: the twins' shared inline pipeline ("mcp-lens") — ranking= names it; NO
+            // pasteable CLI handle (a CLI continuation would walk verbs_for.h computeLensRanking's list); the
+            // compact dialect emitted in-doc (schema= present) so the ref posture reduces it like any other
+            // spec-keyed answer — the outer layer sees AlreadyCompact and passes it through.
+            return forCandidatePageDoc( ing, lensRank, cut, ForCandidatePageReq{ task, "--for=", /*ranking=*/"mcp-lens",
+                                        /*pasteHandle=*/false, /*compactLegend=*/true,
+                                        routeNoteOf( rc, shape, noRoute ), mcpRootArg,
                                         redact, gitstamp::stampAt( root ), budgetTokens, page.limit, page.offset } );
         }
         const ForFilePage filePage = computeForFilePage( ing, lensRank, mcpEvidence );
@@ -4250,7 +4256,9 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
         if( budgetTokens > 0 )
         {
             const AdaptiveCut cut = adaptiveCut( lr.rank, 5, std::size_t( kForLensDefaultTopN ), /*scanFullDistribution=*/true );
-            return forCandidatePageDoc( ing, lr.rank, cut, ForCandidatePageReq{ task, "--pack-task=", lr.routeNote, mcpRootArg,
+            return forCandidatePageDoc( ing, lr.rank, cut, ForCandidatePageReq{ task, "--pack-task=", /*ranking=*/"mcp-lens",
+                                        /*pasteHandle=*/false, /*compactLegend=*/true,
+                                        lr.routeNote, mcpRootArg,
                                         redact, gitstamp::stampAt( root ), budgetTokens, pageLimit, pageOffset } );
         }
         const ForFilePage filePage = computeForFilePage( ing, lr.rank, lr.evidence );

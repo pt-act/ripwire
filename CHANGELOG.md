@@ -1105,9 +1105,14 @@ compact table). `--pack-task` under a budget takes the same window; a window wit
 (`forbudgetmonotoncheck`), and `--offset=0` alone remains the un-paged answer — its resume point is
 its own `<sigs shown=>`.
 
-MCP `explore` declares `limit`/`offset` (the same bounded pair `for` takes) and answers the identical
-document; previously it silently ignored `budget_tokens` beside a window and served the budgetless
-file page. The `tools/list` manifest grows 46,493 → 46,677 B, and the ceiling moves 46,600 → 46,700 B
+MCP `explore` declares `limit`/`offset` (the same bounded pair `for` takes) and answers the same
+page shape; previously it silently ignored `budget_tokens` beside a window and served the budgetless
+file page. The MCP twins page their own shared ranking (`ranking="mcp-lens"` names it on the root;
+the CLI verbs page `verbs_for.h`'s `computeLensRanking`, `ranking="for-lens"` — the two pipelines
+rank slightly different candidate sets, so `ranking=` says which list a window pages), and the MCP
+pages carry no pasteable CLI `next=` handle — a CLI continuation would walk a different list; the
+machine attributes (`next_offset=`/`limit=`/`next_tier=`) carry the programmatic continuation
+through the same verb. The `tools/list` manifest grows 46,493 → 46,677 B, and the ceiling moves 46,600 → 46,700 B
 — the one sanctioned case that moves it: `explore`'s two declared schema properties
 (`test/mcpmanifestcheck.sh` arm `(1b)` asserts the figure against a live measurement).
 ### Fixed — the Linux G1 sanitizer ritual completes: five string_view comparator lambdas stop wrapping, and the GCC ASan path builds (#342)

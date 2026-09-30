@@ -164,6 +164,24 @@ struct ForCandidatePageReq
 {
     std::string_view       task;
     std::string_view       verbName;       // "--for=" / "--pack-task=": next= names THEIR verb (#294 review)
+    std::string_view       ranking;        // #362 review, item 1: WHICH ranking paged this window — "for-lens"
+                                           //   (verbs_for.h computeLensRanking, the CLI --for/--pack-task pipeline)
+                                           //   or "mcp-lens" (the twins' shared inline pipeline, mcpverbs.h). The
+                                           //   two pipelines rank slightly different candidate sets (the un-paged
+                                           //   heads agree; the page denominator exposes the difference), so a
+                                           //   consumer that crosses dialects must not assume one list.
+    bool                   pasteHandle = true;   // false on MCP: no pasteable CLI argv — a CLI continuation would
+                                                //   walk a DIFFERENT list on the twins' pipeline (#362 review, item 1);
+                                                //   the machine attrs (next_offset=/limit=/next_tier=) remain for the
+                                                //   programmatic continuation through the same verb.
+    bool                   compactLegend = false;   // emit in the compact dialect (the default posture): the page is
+                                                    //   compacted IN-DOC by the central layer (applyCompactDialect,
+                                                    //   candidate-page) so the measured est_tokens=/over_ceiling=
+                                                    //   describe the bytes actually emitted (#362 review, item 4 —
+                                                    //   the CLI-side compaction used to reprice a page the trim loop
+                                                    //   had measured against the full legend, and the stderr line
+                                                    //   contradicted the page). Pre-compacted here, the outer layers
+                                                    //   see schema= and pass it through (AlreadyCompact).
     std::string_view       routeNote;
     std::string_view       rootArg;
     rw::RedactCounts*      redactPtr = nullptr;
@@ -177,8 +195,11 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
                                         const rw::AdaptiveCut& forCut, const ForCandidatePageReq& p )
 {
     using namespace rw;   // the file's idiom: function-scoped
-    const std::string_view task       = p.task;
-    const std::string_view verbName   = p.verbName;
+    const std::string_view task        = p.task;
+    const std::string_view verbName    = p.verbName;
+    const std::string_view rankingName = p.ranking;
+    const bool             pasteHandle = p.pasteHandle;
+    const bool             compactLegend = p.compactLegend;
     const std::string_view routeNote  = p.routeNote;
     const std::string_view rootArg    = p.rootArg;
     rw::RedactCounts* const redactPtr = p.redactPtr;
@@ -306,6 +327,7 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
              + "\" offset=\"" + std::to_string( win.begin )
              + "\" limit=\"" + std::to_string( pageLimit > 0 ? pageLimit : 0 )
              + "\" tier=\"" + ( below ? "below-cliff" : "head" ) + "\""
+             + ( rankingName.empty() ? std::string() : " ranking=\"" + std::string( rankingName ) + "\"" )
              + std::string( extra );
     };
     // THE PASTEABLE CONTINUATION HANDLE — the file page's next= contract: the argv that walks to
@@ -313,6 +335,7 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
     // no hint) and dropped when has_more="0" (#362 review, item 3: a last page handing back a next
     // that returns an empty page carrying the same next= is a loop with no exit).
     const auto buildNextAttr = [ & ]( std::size_t nextOff ) {
+        if( !pasteHandle ) { return std::string(); }   // MCP: no pasteable CLI argv — the machine attrs carry the resume (#362 review, item 1)
         if( nextOff >= candidateTotal ) { return std::string(); }
         std::string inv = nextFlag( verbName, task );   // THEIR verb: pasting continues the same verb (#294 review)
         inv += " --token-budget=" + std::to_string( tokenBudget );
@@ -324,6 +347,7 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
     // next_tier (the ruling's suggestion 2): the tier the CONTINUATION page will carry — only
     // beside a next= (nothing further means no tier to advertise).
     const auto buildNextTierAttr = [ & ]( std::size_t nextOff ) {
+        if( !pasteHandle ) { return std::string(); }   // rides beside next= only
         if( nextOff >= candidateTotal ) { return std::string(); }
         return std::string( " next_tier=\"" ) + ( ( forCut.cliffRank > 0 && nextOff >= forCut.cliffRank ) ? "below-cliff" : "head" ) + "\"";
     };
@@ -413,11 +437,28 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
         if( est > tokenBudget )
         {
             std::tie( t, est ) = buildTail( h, legend, rowsNow, /*overCeiling=*/true, nextNow );
-            rw::emitTo( stderr, "ripwire: for-page est_tokens={} exceeds the stated budget={} — the window cannot fit; "
-                               "the top row is served with over_ceiling=1\n", est, tokenBudget );
         }
     }
-    return h + t + legend + rowsNow;
+    std::string pageOut = h + t + legend + rowsNow;
+    // (#362 review, item 4) the dialect actually emitted: compact first (the central layer — it
+    // reprices est_tokens= and settles over_ceiling= on the bytes it writes), so the page's own
+    // numbers describe what ships; the outer layers see schema= and pass it through untouched.
+    if( compactLegend )
+    {
+        applyCompactDialect( pageOut, "candidate-page" );
+    }
+    // the stderr notice reads the FINAL page: est_tokens straight off the emitted root, so the
+    // line can never contradict the document (the full-dialect trim numbers used to).
+    if( tokenBudget > 0 )
+    {
+        const std::size_t finalEst = rootUnsignedAttr( std::string_view( pageOut ).substr( pageOut.find( '<' ), pageOut.find( '>' ) + 1 ), "est_tokens" );
+        if( finalEst > tokenBudget && pageOut.find( " over_ceiling=\"1\"" ) != std::string::npos )
+        {
+            rw::emitTo( stderr, "ripwire: for-page est_tokens={} exceeds the stated budget={} — the window cannot fit; "
+                               "the top row is served with over_ceiling=1\n", finalEst, tokenBudget );
+        }
+    }
+    return pageOut;
 }
 
 
