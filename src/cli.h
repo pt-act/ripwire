@@ -2593,9 +2593,12 @@ inline constexpr char kHelpTail[] =
         "                               Any verb NOT in that list REFUSES both flags (exit 1) rather than accepting and\n"
         "                               ignoring them: budget/top-k verbs (--recall/--pack-task/--from-trace/\n"
         "                               --expand/--outline/--pack-signatures/--format=candidates) are shaped by\n"
-        "                               --token-budget the same way; --for/--pack-task take --limit/--offset as their FILE"
-        "                               page, where the budget flags are refused in turn, or beside --token-budget as the"
-        "                               BUDGETED-BUNDLE CANDIDATE PAGE (the <sigs> window over the ranked candidates, their resumable continuation: budget + window together); the rest (--path/--connect/\n"
+        "                               --token-budget the same way; --for takes --limit/--offset as its FILE page, where\n"
+        "                               the budget flags are refused in turn (bare --pack-task --limit refuses: it has no\n"
+        "                               page without a budget), and --for/--pack-task beside --token-budget take the window\n"
+        "                               as the BUDGETED-BUNDLE CANDIDATE PAGE — one <sigs> window over the ranked candidates,\n"
+        "                               signatures only (bodies come via next= or --expand), their resumable continuation;\n"
+        "                               the rest (--path/--connect/\n"
         "                               --around/--exemplar/--report/--mermaid/--map-diff/--metrics and the default map)\n"
         "                               answer with a single fixed-shape result that has no row list to window at all.\n"
         "    --exclude=SUBSTR           drop matching paths (repeatable)   --ignore-tests\n"
@@ -4932,7 +4935,7 @@ inline void validateConfig( Config& c ) noexcept
         {
             if( f.set )
             {
-                rw::emitTo( stderr, "ripwire: {} — it has no bundle for {} to shape, so the flag is refused rather than ignored: drop {} for the page, or drop the window for the bundle\n", pageName, f.name, f.name, f.name );
+                rw::emitTo( stderr, "ripwire: {} — it has no bundle for {} to shape, so the flag is refused rather than ignored: drop {} for the page, or drop the window for the bundle\n", pageName, f.name, f.name );   // 3 placeholders, 3 args (the #362 review caught a 4th)
                 c.ok = false;
             }
         }
