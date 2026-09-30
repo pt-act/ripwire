@@ -1915,8 +1915,8 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
         if( budgetTokens > 0 )
         {
             const AdaptiveCut cut = adaptiveCut( lensRank, 5, std::size_t( forTopN ), /*scanFullDistribution=*/true );
-            return forCandidatePageDoc( ing, lensRank, cut, task, "--for=", routeNoteOf( rc, shape, noRoute ), mcpRootArg,
-                                        redact, gitstamp::stampAt( root ), budgetTokens, page.limit, page.offset );
+            return forCandidatePageDoc( ing, lensRank, cut, ForCandidatePageReq{ task, "--for=", routeNoteOf( rc, shape, noRoute ), mcpRootArg,
+                                        redact, gitstamp::stampAt( root ), budgetTokens, page.limit, page.offset } );
         }
         const ForFilePage filePage = computeForFilePage( ing, lensRank, mcpEvidence );
         // PR #215 review item 4: this page composed "routed: " + rc.reason by hand and so answered in a spelling
@@ -4105,28 +4105,6 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
     // §L10b + verify-wave2 F6: same trim as the other route= construction sites — neither bracket.
     lr.routeNote = routeNoteOf( rc, shape, noRoute );   // row 6: the route CODE, ONE producer (filter.h)
 
-    // PAGING-POC (issue #294, ask (b)): explore's limit/offset parity with `for` — the FILE-GRAIN WIDENING
-    // PAGE the for twin serves (computeForFilePage/renderForFilePageXml, forpage.h) on THIS lr, so the two
-    // dialects cannot serve a different page (the same one-implementation rule the for twin's L-W block
-    // states). Its own <files> root; nothing below runs.
-    if( pageLimit > 0 || pageOffset > 0 )
-    {
-        const std::string_view mcpRootArg = ing.realPaths.empty() ? std::string_view( root ) : std::string_view();
-        // PAGING-POC follow-up (issue #294): budget + window is the CANDIDATE PAGE, not this file
-        // page — before this branch, explore {budget_tokens, limit} served the budgetless file page
-        // with the budget silently ignored (mcpverbscheck 6e's recorded red).
-        if( budgetTokens > 0 )
-        {
-            const AdaptiveCut cut = adaptiveCut( lr.rank, 5, std::size_t( kForLensDefaultTopN ), /*scanFullDistribution=*/true );
-            return forCandidatePageDoc( ing, lr.rank, cut, task, "--pack-task=", lr.routeNote, mcpRootArg,
-                                        redact, gitstamp::stampAt( root ), budgetTokens, pageLimit, pageOffset );
-        }
-        const ForFilePage filePage = computeForFilePage( ing, lr.rank, lr.evidence );
-        const std::string pageRootOpen = ctxRootOpen( task, lr.routeNote, mcpRootArg );
-        return renderForFilePageXml( ing, filePage, ForPageRenderParts{ task, pageRootOpen, forCoveragePct( lr.evidence, topLensId( lr.rank ) ),
-                                                                        pageLimit, pageOffset, mcpRootArg, /*compactLegend=*/false } );
-    }
-
     // input blow-up guard disclosure (lexical.h kMaxUniqueQueryTerms/dedupeQueryTerms) — same channel/
     // attribute names as the other two --for/--pack-task surfaces.
     {
@@ -4192,6 +4170,27 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
 
     const notes::NoteIndex        noteIndex = notes::loadNoteIndex( root );
     const notes::NoteIndex* const notesPtr  = noteIndex.empty() ? nullptr : &noteIndex;
+
+    // PAGING-POC (#294 + the #362 review round, item 6): the page branch sits AFTER every ranking
+    // boost (the early position returned before applyDocMentionBoost above, and the page ranked a
+    // different candidate set than the un-paged answer this same function serves — total= 1155 vs
+    // 901 on the same task; the parity arm in test/mcpverbscheck.sh (6e) pins the two together).
+    // budget + window is the CANDIDATE PAGE; a window with no budget is the FILE-GRAIN WIDENING
+    // PAGE (computeForFilePage/renderForFilePageXml, forpage.h) — the for twin's own page, byte-identical.
+    if( pageLimit > 0 || pageOffset > 0 )
+    {
+        const std::string_view mcpRootArg = ing.realPaths.empty() ? std::string_view( root ) : std::string_view();
+        if( budgetTokens > 0 )
+        {
+            const AdaptiveCut cut = adaptiveCut( lr.rank, 5, std::size_t( kForLensDefaultTopN ), /*scanFullDistribution=*/true );
+            return forCandidatePageDoc( ing, lr.rank, cut, ForCandidatePageReq{ task, "--pack-task=", lr.routeNote, mcpRootArg,
+                                        redact, gitstamp::stampAt( root ), budgetTokens, pageLimit, pageOffset } );
+        }
+        const ForFilePage filePage = computeForFilePage( ing, lr.rank, lr.evidence );
+        const std::string pageRootOpen = ctxRootOpen( task, lr.routeNote, mcpRootArg );
+        return renderForFilePageXml( ing, filePage, ForPageRenderParts{ task, pageRootOpen, forCoveragePct( lr.evidence, topLensId( lr.rank ) ),
+                                                                        pageLimit, pageOffset, mcpRootArg, /*compactLegend=*/false } );
+    }
 
     PackTaskInputs in;
     in.budgetTokens = budgetTokens;
@@ -5615,7 +5614,8 @@ inline bool mcpVerbDeclaresLegend( std::string_view verb ) noexcept
 inline std::string_view mcpCompactLegendHint( std::string_view verb ) noexcept
 {
     if( verb == "analyze" || verb == "rank_by" )        { return "map"; }   // lane/t10-mcp-coverage: rank_by's XML root is the SAME <r> shape analyze serves
-    if( verb == "explore" || verb == "pack_task" )     { return "pack-task"; }
+    if( verb == "explore" || verb == "pack_task" )     { return "pack-task"; }   // their CANDIDATE PAGE (root <sigs>) adjusts to candidate-page inside the layer
+    if( verb == "for" )                                { return "candidate-page"; }   // the for twin's candidate page (root <sigs>); the un-paged <ctx> answer has no spec row here and passes through, as it did under the empty hint
     if( verb == "from_trace" )                         { return "from-trace"; }
     if( verb == "lego" )                               { return "lego"; }
     if( verb == "exemplar" )                           { return "exemplar"; }
