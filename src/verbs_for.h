@@ -2453,7 +2453,9 @@ std::optional<int> runForLens( const MainDispatch& d )
         {
             // W3-N1/#294 review: the page redacts through packSignatures — the tally must be reported,
             // exactly like the --json early return below (a redacted credential must never be silent).
-            const int pageRc = emitForCandidatePage( ing, lensRank, forCut, rw::ForCandidatePageReq{ cfg.forTask, "--for=", routeNoteRaw, flRootArg, redactPtr,
+            const int pageRc = emitForCandidatePage( ing, lensRank, forCut, rw::ForCandidatePageReq{ cfg.forTask, "--for=", /*ranking=*/"for-lens",
+                                         /*pasteHandle=*/true, /*compactLegend=*/cfg.legend != "full",
+                                         routeNoteRaw, flRootArg, redactPtr,
                                          flSingleRoot ? std::string_view( gitstamp::stampAt( std::string( root ) ) ) : std::string_view(),
                                          cfg.tokenBudget, cfg.pageLimit, cfg.pageOffset } );
             reportRedactions( stderr, redactCounts );   // W3-N1: the page redacts — the tally reports
@@ -3822,7 +3824,9 @@ std::optional<int> runPackTask( const MainDispatch& d )
         }
         const AdaptiveCut packCut = adaptiveCut( lr.rank, 5, std::size_t( cfg.packTopN > 0 ? cfg.packTopN : kForLensDefaultTopN ), true );
         const std::string packAtStamp = in.rootArg.empty() ? std::string() : gitstamp::stampAt( std::string( in.rootArg ) );
-        const int packPageRc = emitForCandidatePage( ing, lr.rank, packCut, rw::ForCandidatePageReq{ task, "--pack-task=", lr.routeNote, in.rootArg,
+        const int packPageRc = emitForCandidatePage( ing, lr.rank, packCut, rw::ForCandidatePageReq{ task, "--pack-task=", /*ranking=*/"for-lens",
+                                     /*pasteHandle=*/true, /*compactLegend=*/cfg.legend != "full",
+                                     lr.routeNote, in.rootArg,
                                      d.redactPtr, packAtStamp, cfg.tokenBudget, cfg.pageLimit, cfg.pageOffset } );
         reportRedactions( stderr, d.redactCounts );   // W3-N1: the page redacts — the tally reports
         return packPageRc;
