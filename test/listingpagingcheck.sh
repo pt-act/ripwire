@@ -516,9 +516,14 @@ PY
 # of the paged budgeted bundle). RED on the pre-feature binary is the intended state: gate written
 # BEFORE the code, red vs the pre-change binary — today both paged runs refuse and this records that.
 echo "=== (G) budgeted-bundle candidate continuation: page[0:3] + page[3:6] == page[0:6] ==="
-run "$ROOT" g_budget_p0 --for="rank symbols" --token-budget=800 --limit=3 --offset=0
-run "$ROOT" g_budget_p3 --for="rank symbols" --token-budget=800 --limit=3 --offset=3
-run "$ROOT" g_budget_p6 --for="rank symbols" --token-budget=800 --limit=6 --offset=0
+# at a NO-TRIM budget: the page's own legend rides the budget, so a small budget trims within every
+# page and the pure-window identity (page[0:3]+page[3:6] == page[0:6]) cannot hold — the identity is
+# the WINDOW's; the trim path is the (G4) trimming walk below (the #362 review's ask).
+# on src/ (cliff 40 > 6: the single-tier clamp never fires; the repo ROOT clamps every head
+# window to the 1-row cliff — a correct page, but not one this pure-window identity can test)
+run "$ROOT/src" g_budget_p0 --for="rank symbols" --token-budget=100000 --limit=3 --offset=0
+run "$ROOT/src" g_budget_p3 --for="rank symbols" --token-budget=100000 --limit=3 --offset=3
+run "$ROOT/src" g_budget_p6 --for="rank symbols" --token-budget=100000 --limit=6 --offset=0
 
 python3 - "$TMP" <<'PY'
 import os, sys, xml.etree.ElementTree as ET
@@ -631,6 +636,7 @@ while [ "$page" -lt 12 ]; do
     python3 -c '
 import re, sys
 raw = open( sys.argv[1], encoding="utf-8", errors="replace" ).read()
+raw = re.sub( r"<!--.*?-->", "", raw, flags=re.S )   # the legend DEFINES <d r=N> in prose: never count prose as rows
 # candidate identity is the (file, line, name) TRIPLE — same-name definitions are distinct
 # candidates even in ONE file (DYNMAP_DEFINE_RANK_32 sits at two lines of dynamic_map.hpp),
 # so name or (file, name) alone false-flags them as seam overlap. n=/p=/l= may sit in any
@@ -661,10 +667,13 @@ if dups:
 # the tiling measure is the pages' own shown= arithmetic (candidates SERVED); the <d n= extraction
 # counts NAMED-DEF rows — a pseudo-symbol (e.g. <file-scope>) is counted as served but emits no row,
 # so shown-sum == total is the contract, and the row list tiles the named-def subset in order.
-if shown_sum != total:
-    problems.append(f"walk: shown sums to {shown_sum} vs total={total} — the pages do not tile the candidate set")
-if len(rows) > shown_sum:
-    problems.append(f"walk: {len(rows)} named rows exceed the {shown_sum} served candidates")
+# the tile under pseudo-symbols: a candidate slot can be SERVED without printing a row (<file-scope>),
+# so shown-sum <= total with the difference consumed by pseudo-slots; the coherence is rows-extracted
+# == shown-counted plus no duplicates plus the prefix below.
+if shown_sum > total:
+    problems.append(f"walk: shown sums to {shown_sum} vs total={total} — the pages over-serve the candidate set")
+if len(rows) != shown_sum:
+    problems.append(f"walk: {len(rows)} rows extracted vs shown summing {shown_sum} — the count and the rows disagree")
 # tier sequence: all head pages precede all below-cliff pages (exactly one boundary)
 seen_below = False
 for i, t in enumerate(tiers):
@@ -678,6 +687,7 @@ bp = os.path.join(tmp, "g3_bundle")
 if os.path.exists(bp) and os.path.getsize(bp) > 0:
     import re
     raw = open(bp, encoding="utf-8", errors="replace").read()
+    raw = re.sub( r'<!--.*?-->', '', raw, flags=re.S )   # the legend's prose <d r=N> is not a row
     bundle = []
     for m in re.finditer( r'<d\s[^>]*>', raw ):
         t = m.group( 0 )
@@ -695,6 +705,45 @@ sys.exit(1 if problems else 0)
 PY
 [ $? = 0 ] && ok '(G3) every page concatenated == the full ranked candidate list (no gap, no overlap, one tier boundary)' \
                || no '(G3) the end-to-end walk (issue #294 ruling, suggestion 5) does not hold — see FAIL lines above'
+
+# ── (G4) THE TRIMMING WALK (#362 review, item 2): the same walk at a budget that TRIMS within ──
+# every page, asserting NO DUPLICATE candidate across the seam. The resume point is the last
+# PRINTED row's candidate index + 1 (a pseudo-symbol consumes a slot without printing a row), so
+# a served-count arithmetic lands one short and the next page re-serves a row — the walk catches it.
+echo "=== (G4) trimming walk: a budget that trims, no duplicate candidate across the seam ==="
+: > "$TMP/g4_rows.txt"
+offset=0; page=0
+while [ "$page" -lt 12 ]; do
+    run "$ROOT/src" "g4_walk_$page" --for="rank symbols" --token-budget=600 --limit=40 --offset=$offset
+    has_more="$( attr "$TMP/g4_walk_$page" sigs has_more )"
+    nextoff="$( attr "$TMP/g4_walk_$page" sigs next_offset )"
+    [ -n "$nextoff" ] || { no "(G4) walk page $page produced no parseable root"; break; }
+    python3 -c '
+import re, sys
+raw = open( sys.argv[1], encoding="utf-8", errors="replace" ).read()
+raw = re.sub( r"<!--.*?-->", "", raw, flags=re.S )   # the legend DEFINES <d r=N> in prose: never count prose as rows
+for tag in re.finditer( r"<d\s[^>]*>", raw ):
+    t = tag.group( 0 )
+    n = re.search( r"\sn=\"([^\"]*)\"", t )
+    p = re.search( r"\sp=\"([^\"]*)\"", t )
+    l = re.search( r"\sl=\"([^\"]*)\"", t )
+    print( ( p.group( 1 ) if p else "?" ) + "\x1f" + ( l.group( 1 ) if l else "?" ) + "\x1f" + ( n.group( 1 ) if n else "?" ) )
+' "$TMP/g4_walk_$page" >> "$TMP/g4_rows.txt"
+    page=$(( page + 1 ))
+    [ "$has_more" = "1" ] || break
+    offset="$nextoff"
+done
+TRIM_DUPS=$( python3 - "$TMP/g4_rows.txt" <<PYEOF
+import sys
+rows = [ l.rstrip( "\n" ) for l in open( sys.argv[1] ) if l.strip() ]
+print( len( rows ) - len( set( rows ) ) )
+PYEOF
+)
+if [ "$TRIM_DUPS" = "0" ]; then
+    ok "(G4) trimming walk (budget 600, $page pages): no duplicate candidate across the seam"
+else
+    no "(G4) trimming walk: $TRIM_DUPS duplicate candidate(s) across the seam — the resume point lands short"
+fi
 
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit $fail

@@ -822,7 +822,7 @@ except Exception: print( "PARSE_ERROR" ); sys.exit(0)
 if "error" in r: print( "MCPError:" + str( r["error"].get("message","") )[:90] ); sys.exit(0)
 try:    t = r["result"]["content"][0]["text"]
 except Exception: print( "NO_TEXT" ); sys.exit(0)
-print( t.lstrip()[ : 400 ] )
+print( t.lstrip() )   # the FULL text: over_ceiling sits past byte 400 (#362 review round, arm fix)
 '
 }
 for verb in for explore; do

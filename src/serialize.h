@@ -4746,7 +4746,11 @@ inline void packSignatures( std::FILE* out, const IngestResult& ing, const std::
             {
                 continue;
             }
-            pushShownSigId( shownIdsOut, order, e.globalRank );   // lane 2
+            // lane 2 — the LOCAL rank under rankBase: globalRank carries the WINDOWED serving's
+            // global offset (#294 review), and order[] holds the WINDOW's rows in its head, so the
+            // id mapping must subtract rankBase or it reads past the window into the masked tail
+            // (the #362 review round's next_offset=2^32 seam).
+            pushShownSigId( shownIdsOut, order, std::uint32_t( e.globalRank - rankBase ) );
             w.write( e.head.c_str() );
             if( !e.doc.empty() ) { w.write( "<doc>" );  w.write( escapeXml( e.doc, esc ) );  w.write( "</doc>" ); }
             w.write( escapeXml( e.sig, esc ) );
