@@ -2563,8 +2563,8 @@ inline McpDispatchResult dispatchMcpLine( const std::string& line, int topK, boo
                     static_assert( kMcpRecallTopKMax == 1000,
                                    "the top_k refusal names the band 1..1000 in mcprefusal.h's kMcpValueFields and in the "
                                    "tools/list memory_recall stanza — move all three together" );
-                    resp = textResult( packTaskText( path, task, budgetTokens, redactPtr, partitionCount, noRoute,
-                                                     explorePage.page.limit, explorePage.page.offset ) );
+                    resp = textResult( packTaskText( path, task, budgetTokens, redactPtr,
+                                                     PackTaskForm{ partitionCount, noRoute, explorePage.page } ) );
                     }
                 }
                 // L4: `from_trace` — maps a pasted stack-trace/sanitizer/compiler-error TEXT onto indexed symbols
