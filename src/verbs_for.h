@@ -3766,6 +3766,30 @@ std::optional<int> runTargetedViews( const MainDispatch& d )
 // kPackTask* constants) now lives in packtask.h (L4) as packTaskBundleText() — shared verbatim with the MCP
 // explore/pack_task verb (mcpverbs.h's packTaskText()). This handler only resolves CLI-specific inputs
 // (flags, MainDispatch pointers) and hands them to that ONE assembler.
+// (#362 review, item 2): the budgeted-window branch, extracted — runPackTask's own complexity was
+// the quality gate's finding (19 -> 28 as the paging round grew the branch inline). One helper, one
+// job: refuse a partitioned window, serve the candidate page, report the redaction tally.
+inline std::optional<int> runPackTaskPage( const MainDispatch& d, const rw::LensRanking& lr, const std::string& task,
+                                           const rw::PackTaskInputs& in )
+{
+    using namespace rw;
+    const Config&       cfg = d.cfg;
+    const IngestResult& ing = d.ing;
+    if( cfg.partitionCount > 0 )
+    {
+        rw::emitRaw( stderr, "ripwire: --partition and a --limit/--offset window are mutually exclusive — a partitioned bundle has N+1 slices and no single candidate order to page; drop one\n" );
+        return 1;
+    }
+    const AdaptiveCut   packCut    = adaptiveCut( lr.rank, 5, std::size_t( cfg.packTopN > 0 ? cfg.packTopN : kForLensDefaultTopN ), true );
+    const std::string   packAtStamp = in.rootArg.empty() ? std::string() : gitstamp::stampAt( std::string( in.rootArg ) );
+    const int packPageRc = emitForCandidatePage( ing, lr.rank, packCut, rw::ForCandidatePageReq{ task, "--pack-task=", /*ranking=*/"for-lens",
+                                 /*pasteHandle=*/true, /*compactLegend=*/cfg.legend != "full",
+                                 lr.routeNote, in.rootArg,
+                                 d.redactPtr, packAtStamp, cfg.tokenBudget, cfg.pageLimit, cfg.pageOffset } );
+    reportRedactions( stderr, d.redactCounts );   // W3-N1: the page redacts — the tally reports
+    return packPageRc;
+}
+
 std::optional<int> runPackTask( const MainDispatch& d )
 {
     using namespace rw;
@@ -3815,21 +3839,10 @@ std::optional<int> runPackTask( const MainDispatch& d )
     // with an explicit window pages its ranked candidates, mirroring --for (the shared inline). The cliff
     // statistic is computed here ONCE (the same call --for's disclosure uses); --partition and a window
     // refuse together — a partitioned bundle has N+1 slices and no single candidate order to page.
+    // (#362 review, item 2): the branch body lives in runPackTaskPage — this stays the one-line gate
     if( cfg.tokenBudget != 0 && ( cfg.pageLimit > 0 || cfg.pageOffset > 0 ) )
     {
-        if( cfg.partitionCount > 0 )
-        {
-            rw::emitRaw( stderr, "ripwire: --partition and a --limit/--offset window are mutually exclusive — a partitioned bundle has N+1 slices and no single candidate order to page; drop one\n" );
-            return 1;
-        }
-        const AdaptiveCut packCut = adaptiveCut( lr.rank, 5, std::size_t( cfg.packTopN > 0 ? cfg.packTopN : kForLensDefaultTopN ), true );
-        const std::string packAtStamp = in.rootArg.empty() ? std::string() : gitstamp::stampAt( std::string( in.rootArg ) );
-        const int packPageRc = emitForCandidatePage( ing, lr.rank, packCut, rw::ForCandidatePageReq{ task, "--pack-task=", /*ranking=*/"for-lens",
-                                     /*pasteHandle=*/true, /*compactLegend=*/cfg.legend != "full",
-                                     lr.routeNote, in.rootArg,
-                                     d.redactPtr, packAtStamp, cfg.tokenBudget, cfg.pageLimit, cfg.pageOffset } );
-        reportRedactions( stderr, d.redactCounts );   // W3-N1: the page redacts — the tally reports
-        return packPageRc;
+        return runPackTaskPage( d, lr, task, in );
     }
 
     // --partition=N: the FAN-OUT form. Same lens ranking, same PackTaskInputs, same

@@ -4147,10 +4147,23 @@ inline std::pair<std::string, std::string> qualityBaselineJson( const std::strin
 // what it is FOR; a separate verb would duplicate the whole task/budget contract for one integer. 0 (or any
 // value outside 2..16, which is silently clamped OFF rather than erroring an otherwise valid explore call)
 // ⇒ the plain single-bundle form, byte-identical to before.
-inline std::string packTaskText( const std::string& root, const std::string& task, std::size_t budgetTokens,
-                                 RedactCounts* redact = nullptr, std::uint32_t partitionCount = 0, bool noRoute = false,
-                                 int pageLimit = 0, int pageOffset = 0 )
+// (#362 review, item 2): the form options in ONE struct — packTaskText's parameter list was the
+// quality gate's finding (6 -> 8 as the paging round grew it; the form bundles the family: the
+// partition fan-out, the route posture, and the page window, all of them optional knobs of the
+// same bundle). Aggregate-init order is the declaration order.
+struct PackTaskForm
 {
+    std::uint32_t partitionCount = 0;   // --partition=N over MCP (0 = one un-split bundle)
+    bool          noRoute        = false;   // the CLI --no-route twin
+    McpPageArgs   page;                     // limit/offset: the candidate page under a budget, the file page without
+};
+inline std::string packTaskText( const std::string& root, const std::string& task, std::size_t budgetTokens,
+                                 RedactCounts* redact = nullptr, const PackTaskForm& form = {} )
+{
+    const std::uint32_t partitionCount = form.partitionCount;
+    const bool         noRoute        = form.noRoute;
+    const int          pageLimit      = form.page.limit;
+    const int          pageOffset     = form.page.offset;
     const McpIndex&     ix  = getIndex( root );
     const IngestResult& ing = ix.ing;
     const Graph&        g   = ix.g;
