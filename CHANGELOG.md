@@ -25,7 +25,6 @@ found" while `Class::method` resolved. When no other spelling matches, a selecto
 usual (`defs=N`, or `--edit-check`'s refusal). A selector that resolved before resolves identically. `--whereis` is a
 lexical scan of every ref and is unchanged. Gate: `test/selectorscopecheck.sh` arms (i)-(m).
 
-<<<<<<< HEAD
 ### Added — a memory guard on every root: zero-config, silent on normal runs, a disclosed partial answer past its line (#350, layer 3)
 
 ripwire measured none of its own memory, so a large tree (#350: a non-git home directory, 67 GB) could grow it until
