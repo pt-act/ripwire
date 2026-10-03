@@ -761,8 +761,10 @@ the CLI verbs page `verbs_for.h`'s `computeLensRanking`, `ranking="for-lens"` �
 rank slightly different candidate sets, so `ranking=` says which list a window pages), and the MCP
 pages carry no pasteable CLI `next=` handle — a CLI continuation would walk a different list; the
 machine attributes (`next_offset=`/`limit=`/`next_tier=`) carry the programmatic continuation
-through the same verb. The `tools/list` manifest grows 46,493 → 46,677 B, and the ceiling moves 46,600 → 46,700 B
-— the one sanctioned case that moves it: `explore`'s two declared schema properties
+through the same verb. The `tools/list` manifest grows 46,581 → 46,765 B (measured against train 23's
+`main`, re-based after the sync), and the ceiling moves 46,700 → 46,800 B
+- the one sanctioned case that moves it: the paging schema properties (`limit`/`offset`/`next_tier`
+on `for`, `pack_task` and `explore`)
 (`test/mcpmanifestcheck.sh` arm `(1b)` asserts the figure against a live measurement).
 ### Fixed — the Linux G1 sanitizer ritual completes: five string_view comparator lambdas stop wrapping, and the GCC ASan path builds (#342)
 

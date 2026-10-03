@@ -283,7 +283,12 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 # not, which is the divergence that lane fixed. +122 B of description to say what is true instead; no schema
 # byte moved and no tool was added. Spent from the 229 B this block already held, not from a raise: correcting
 # a claim the manifest itself makes is what headroom is for. Headroom after this line: 107 B.
-CEILING = 46700
+# PAGING LANE (#362, synced onto train 23): 46,581 -> 46,765 B, the ceiling moves 46,700 -> 46,800.
+# The +184 B is the paging schema alone — limit/offset/next_tier declared on for, pack_task and
+# explore — measured live on both trees: upstream/main's binary answers 46,581 B, this branch's
+# answers 46,765 B (33 tools each, descriptions identical at 22,260 B, schemas 19,585 -> 19,769).
+# Headroom after this line: 35 B.
+CEILING = 46800
 manifest = len( json.dumps( { "tools": tools }, separators = ( ",", ":" ) ) )
 descBytes   = sum( len( t[ "description" ] ) for t in tools )
 schemaBytes = sum( len( json.dumps( t[ "inputSchema" ], separators = ( ",", ":" ) ) ) for t in tools )
