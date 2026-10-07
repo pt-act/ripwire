@@ -284,7 +284,12 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 # description, so each says "value uses (tables, args), not a proven call" (+70 B and +71 B, 141 B in all, no schema
 # byte moved, no tool added). Headroom after this line: 28 B (the final review tightened a first 46,800 anchor to the
 # #214-sized margin: 78 B of unattributed headroom was wider than any re-anchor here has taken).
-CEILING = 46750
+# PAGING LANE (#362, synced onto train 25): 46,732 -> 46,916 B, the ceiling moves 46,750 -> 46,950.
+# The +184 B is the paging schema alone — limit/offset/next_tier declared on for, pack_task and
+# explore — measured live on both trees: train-25 main's binary answers 46,732 B, this branch's
+# answers 46,916 B (33 tools each, descriptions identical at 22,411 B, schemas 19,585 -> 19,769).
+# Headroom after this line: 34 B, the #214-sized margin.
+CEILING = 46950
 manifest = len( json.dumps( { "tools": tools }, separators = ( ",", ":" ) ) )
 descBytes   = sum( len( t[ "description" ] ) for t in tools )
 schemaBytes = sum( len( json.dumps( t[ "inputSchema" ], separators = ( ",", ":" ) ) ) for t in tools )

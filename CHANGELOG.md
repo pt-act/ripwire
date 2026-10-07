@@ -96,8 +96,9 @@ call-shaped references, so on such a function `--callers`, `--callees`, `--impac
 - **Cost.** A cold default map costs +3.6% CPU on this tree, +6.3% on django and +5.2% on webpack (median of 5,
   `sim/refval_cpu.sh`).
 - **Cache.** `kParserVer` moves.
-- **Manifest.** The `tools/list` manifest grows 46,591 → 46,732 B: the two find descriptions name `valueRefs` as
-  not a proven call.
+- **Manifest.** The `tools/list` manifest grows 46,591 → 46,916 B — 46,732 B of it here (the two find descriptions
+  name `valueRefs` as not a proven call); the rest is the paging lane's schema (#362 below), re-pinned to the live
+  merged-tree measurement this branch ships.
 
 Gate: `test/recallshapecheck.sh`. It has 177 arms across C, C++, JS, JSX, TS, TSX, Python and Go:
 - positives;
@@ -1111,8 +1112,8 @@ the CLI verbs page `verbs_for.h`'s `computeLensRanking`, `ranking="for-lens"` �
 rank slightly different candidate sets, so `ranking=` says which list a window pages), and the MCP
 pages carry no pasteable CLI `next=` handle — a CLI continuation would walk a different list; the
 machine attributes (`next_offset=`/`limit=`/`next_tier=`) carry the programmatic continuation
-through the same verb. The `tools/list` manifest grows 46,581 → 46,765 B (measured against train 23's
-`main`, re-based after the sync), and the ceiling moves 46,700 → 46,800 B
+through the same verb. The `tools/list` manifest grows 46,732 → 46,916 B (measured against train 25's
+`main`, re-based after the sync; descriptions identical, the delta is schema), and the ceiling moves 46,750 → 46,950 B
 - the one sanctioned case that moves it: the paging schema properties (`limit`/`offset`/`next_tier`
 on `for`, `pack_task` and `explore`)
 (`test/mcpmanifestcheck.sh` arm `(1b)` asserts the figure against a live measurement).
