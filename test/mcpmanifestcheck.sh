@@ -285,10 +285,11 @@ tools = json.loads( line )[ "result" ][ "tools" ]
 # byte moved, no tool added). Headroom after this line: 28 B (the final review tightened a first 46,800 anchor to the
 # #214-sized margin: 78 B of unattributed headroom was wider than any re-anchor here has taken).
 # PAGING LANE (#362, synced onto train 25): 46,732 -> 46,916 B, the ceiling moves 46,750 -> 46,950.
-# The +184 B is the paging schema alone — limit/offset/next_tier declared on for, pack_task and
-# explore — measured live on both trees: train-25 main's binary answers 46,732 B, this branch's
-# answers 46,916 B (33 tools each, descriptions identical at 22,411 B, schemas 19,585 -> 19,769).
-# Headroom after this line: 34 B, the #214-sized margin.
+# The +184 B is explore's limit/offset alone (774 -> 958 B) — for already declared the pair (777 B,
+# unchanged), pack_task is a dispatch alias, not a listed tool, and no tool declares next_tier (it
+# is a response attribute, not a schema property). Measured live on both trees: train-25 main's
+# binary answers 46,732 B, this branch's answers 46,916 B (33 tools each, descriptions identical at
+# 22,411 B, schemas 19,585 -> 19,769). Headroom after this line: 34 B, the #214-sized margin.
 CEILING = 46950
 manifest = len( json.dumps( { "tools": tools }, separators = ( ",", ":" ) ) )
 descBytes   = sum( len( t[ "description" ] ) for t in tools )
@@ -311,11 +312,15 @@ check( manifest <= CEILING,
 changelog = open( os.path.join( ROOT, "CHANGELOG.md" ), encoding = "utf-8" ).read()
 _, _, afterHeading = changelog.partition( "## [Unreleased]" )
 unreleased = afterHeading.split( "\n## [", 1 )[ 0 ]  # [Unreleased]'s body, up to the next dated heading
-m = re.search( r"tools/list.? manifest grows [\d,]+[^\d]+([\d,]+) B", unreleased )
+claims = re.findall( r"tools/list.? manifest grows [\d,]+[^\d]+([\d,]+) B", unreleased )
+m = claims[ -1 ] if claims else None   # #362 round 4 (B5c): several [Unreleased] entries restate the figure
+                                       # (theirs pre-paging, ours the merged tree's). The LAST claim describes
+                                       # the current manifest; earlier ones are historical within the same
+                                       # mutable section, kept verbatim per review.
 if m is None:
     print( "  INFO  (1b) no 'tools/list manifest grows N -> N B' claim in CHANGELOG's [Unreleased] section (nothing to check)" )
 else:
-    claimed = int( m.group( 1 ).replace( ",", "" ) )
+    claimed = int( m.replace( ",", "" ) )
     check( claimed == manifest,
            "(1b) CHANGELOG's [Unreleased] manifest-growth claim (%d B) matches the live tools/list measurement (%d B)"
            % ( claimed, manifest ) )

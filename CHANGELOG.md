@@ -96,9 +96,8 @@ call-shaped references, so on such a function `--callers`, `--callees`, `--impac
 - **Cost.** A cold default map costs +3.6% CPU on this tree, +6.3% on django and +5.2% on webpack (median of 5,
   `sim/refval_cpu.sh`).
 - **Cache.** `kParserVer` moves.
-- **Manifest.** The `tools/list` manifest grows 46,591 → 46,916 B — 46,732 B of it here (the two find descriptions
-  name `valueRefs` as not a proven call); the rest is the paging lane's schema (#362 below), re-pinned to the live
-  merged-tree measurement this branch ships.
+- **Manifest.** The `tools/list` manifest grows 46,591 → 46,732 B: the two find descriptions name `valueRefs` as
+  not a proven call.
 
 Gate: `test/recallshapecheck.sh`. It has 177 arms across C, C++, JS, JSX, TS, TSX, Python and Go:
 - positives;
@@ -1107,15 +1106,20 @@ its own `<sigs shown=>`.
 
 MCP `explore` declares `limit`/`offset` (the same bounded pair `for` takes) and answers the same
 page shape; previously it silently ignored `budget_tokens` beside a window and served the budgetless
-file page. The MCP twins page their own shared ranking (`ranking="mcp-lens"` names it on the root;
-the CLI verbs page `verbs_for.h`'s `computeLensRanking`, `ranking="for-lens"` — the two pipelines
-rank slightly different candidate sets, so `ranking=` says which list a window pages), and the MCP
-pages carry no pasteable CLI `next=` handle — a CLI continuation would walk a different list; the
-machine attributes (`next_offset=`/`limit=`/`next_tier=`) carry the programmatic continuation
-through the same verb. The `tools/list` manifest grows 46,732 → 46,916 B (measured against train 25's
-`main`, re-based after the sync; descriptions identical, the delta is schema), and the ceiling moves 46,750 → 46,950 B
-- the one sanctioned case that moves it: the paging schema properties (`limit`/`offset`/`next_tier`
-on `for`, `pack_task` and `explore`)
+file page. All five page paths — CLI `--for`, CLI `--pack-task`, MCP `for`/`explore`/`pack_task` —
+page ONE candidate list: the CLI pages force the ranking's full distribution under a window (the
+rule `--for`'s bundle path already followed), exactly the exhaustive scoring the MCP twins always
+used, so the `ranking=` attribute the first round carried is gone — there is nothing left to
+distinguish. Every page, CLI or MCP, carries the same pasteable `next=`/`next_tier=`: an MCP page's
+handle is a CLI argv now, and it walks the same list. Every accepted flag that changes the ranking
+(`--no-route`, `--no-mention-boost`, `--no-doc-mention`, `--cochange-boost` on the CLI; `no_route`
+on the MCP twins) rides `next=`, so a pasted continuation re-ranks identically — the
+`test/pagingsweepcheck.sh` walk arms pin all five surfaces to `has_more="0"` with identical row
+sequences and pin each flag's echo. The `tools/list` manifest grows 46,732 → 46,916 B (measured
+against train 25's `main`; descriptions identical, and the +184 B of schema is `explore`'s
+`limit`/`offset` alone — `for` already declared the pair, `pack_task` is a dispatch alias, not a
+listed tool), and the ceiling moves 46,750 → 46,950 B
+- the one sanctioned case that moves it: `explore`'s two declared schema properties
 (`test/mcpmanifestcheck.sh` arm `(1b)` asserts the figure against a live measurement).
 ### Fixed — the Linux G1 sanitizer ritual completes: five string_view comparator lambdas stop wrapping, and the GCC ASan path builds (#342)
 
