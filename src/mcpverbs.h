@@ -1963,12 +1963,15 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
         if( budgetTokens > 0 )
         {
             const AdaptiveCut cut = adaptiveCut( lensRank, 5, std::size_t( forTopN ), /*scanFullDistribution=*/true );
-            // #362 review, item 1+3: the twins' shared inline pipeline ("mcp-lens") — ranking= names it; NO
-            // pasteable CLI handle (a CLI continuation would walk verbs_for.h computeLensRanking's list); the
-            // compact dialect emitted in-doc (schema= present) so the ref posture reduces it like any other
-            // spec-keyed answer — the outer layer sees AlreadyCompact and passes it through.
-            return forCandidatePageDoc( ing, lensRank, cut, ForCandidatePageReq{ task, "--for=", /*ranking=*/"mcp-lens",
-                                        /*pasteHandle=*/false, /*compactLegend=*/true,
+            // #362 review round 4 (B1): the twins' inline pipeline always scored the full distribution
+            // (pruneTopK=0) and the CLI pages now force fullDistribution under a window, so the five page
+            // paths rank ONE list — the page carries the same pasteable CLI next= as the CLI pages, with
+            // no_route echoed (B2) so the pasted continuation re-ranks identically. The compact dialect
+            // emitted in-doc (schema= present) so the ref posture reduces it like any other spec-keyed
+            // answer — the outer layer sees AlreadyCompact and passes it through.
+            return forCandidatePageDoc( ing, lensRank, cut, ForCandidatePageReq{ task, "--for=",
+                                        noRoute ? std::string_view( " --no-route" ) : std::string_view(),
+                                        /*pasteHandle=*/true, /*compactLegend=*/true,
                                         routeNoteOf( rc, shape, noRoute ), mcpRootArg,
                                         redact, gitstamp::stampAt( root ), budgetTokens, page.limit, page.offset } );
         }
@@ -4269,8 +4272,11 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
         if( budgetTokens > 0 )
         {
             const AdaptiveCut cut = adaptiveCut( lr.rank, 5, std::size_t( kForLensDefaultTopN ), /*scanFullDistribution=*/true );
-            return forCandidatePageDoc( ing, lr.rank, cut, ForCandidatePageReq{ task, "--pack-task=", /*ranking=*/"mcp-lens",
-                                        /*pasteHandle=*/false, /*compactLegend=*/true,
+            // #362 review round 4 (B1/B2): one list across all five page paths — the same pasteable
+            // next= as the CLI pages, no_route echoed so the pasted continuation re-ranks identically.
+            return forCandidatePageDoc( ing, lr.rank, cut, ForCandidatePageReq{ task, "--pack-task=",
+                                        noRoute ? std::string_view( " --no-route" ) : std::string_view(),
+                                        /*pasteHandle=*/true, /*compactLegend=*/true,
                                         lr.routeNote, mcpRootArg,
                                         redact, gitstamp::stampAt( root ), budgetTokens, pageLimit, pageOffset } );
         }

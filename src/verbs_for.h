@@ -2227,6 +2227,19 @@ inline int emitForCandidatePage( const rw::IngestResult& ing, const std::vector<
     return 0;
 }
 
+// B2 (#362 review round 4): the argv fragment of every accepted flag that changes the lens ranking,
+// echoed into the page's next= so a pasted continuation re-ranks identically. The bundle-shaping
+// set (--adaptive/--anchor/--signatures-only/…) is REFUSED beside a window (cli.h), so it never
+// appears here; these four are accepted because they select the ranking, not the bundle's shape.
+inline std::string forPageRankFlagArgv( const rw::Config& cfg )
+{
+    std::string s;
+    if( cfg.noRoute )         { s += " --no-route"; }
+    if( cfg.noMentionBoost )  { s += " --no-mention-boost"; }
+    if( cfg.noDocMention )    { s += " --no-doc-mention"; }
+    if( cfg.cochangeBoost )   { s += " --cochange-boost"; }
+    return s;
+}
 
 std::optional<int> runForLens( const MainDispatch& d )
 {
@@ -2453,7 +2466,8 @@ std::optional<int> runForLens( const MainDispatch& d )
         {
             // W3-N1/#294 review: the page redacts through packSignatures — the tally must be reported,
             // exactly like the --json early return below (a redacted credential must never be silent).
-            const int pageRc = emitForCandidatePage( ing, lensRank, forCut, rw::ForCandidatePageReq{ cfg.forTask, "--for=", /*ranking=*/"for-lens",
+            const std::string rankFlags = forPageRankFlagArgv( cfg );
+            const int pageRc = emitForCandidatePage( ing, lensRank, forCut, rw::ForCandidatePageReq{ cfg.forTask, "--for=", rankFlags,
                                          /*pasteHandle=*/true, /*compactLegend=*/cfg.legend != "full",
                                          routeNoteRaw, flRootArg, redactPtr,
                                          flSingleRoot ? std::string_view( gitstamp::stampAt( std::string( root ) ) ) : std::string_view(),
@@ -3782,7 +3796,8 @@ inline std::optional<int> runPackTaskPage( const MainDispatch& d, const rw::Lens
     }
     const AdaptiveCut   packCut    = adaptiveCut( lr.rank, 5, std::size_t( cfg.packTopN > 0 ? cfg.packTopN : kForLensDefaultTopN ), true );
     const std::string   packAtStamp = in.rootArg.empty() ? std::string() : gitstamp::stampAt( std::string( in.rootArg ) );
-    const int packPageRc = emitForCandidatePage( ing, lr.rank, packCut, rw::ForCandidatePageReq{ task, "--pack-task=", /*ranking=*/"for-lens",
+    const std::string   packRankFlags = forPageRankFlagArgv( cfg );
+    const int packPageRc = emitForCandidatePage( ing, lr.rank, packCut, rw::ForCandidatePageReq{ task, "--pack-task=", packRankFlags,
                                  /*pasteHandle=*/true, /*compactLegend=*/cfg.legend != "full",
                                  lr.routeNote, in.rootArg,
                                  d.redactPtr, packAtStamp, cfg.tokenBudget, cfg.pageLimit, cfg.pageOffset } );
@@ -3809,7 +3824,12 @@ std::optional<int> runPackTask( const MainDispatch& d )
     const std::string task( cfg.packTask );
 
     // ── the routed+anchored lens ranking, shared verbatim with --for (all existing boosts apply) ───────────
-    LensRanking lr = computeLensRanking( d, task );
+    // B1 (#362 review round 4): a window pages the WHOLE positive-score distribution — a pruned ranking is
+    // exact only for its top-K, so total= and the far pages would depend on a performance optimisation
+    // (measured: 931 vs 1232 candidates on src/). The rule --for's bundle path already follows. The un-paged
+    // bundle keeps the H2 pruning: its consumers read only the head.
+    const bool packWindowPages = cfg.tokenBudget != 0 && ( cfg.pageLimit > 0 || cfg.pageOffset > 0 );
+    LensRanking lr = computeLensRanking( d, task, /*compactCandidate=*/false, /*fullDistribution=*/packWindowPages );
 
     // Q3 per-file churn (mirror --for): only mined on the --for git pass, so here it stays empty/zero when
     // --for wasn't also given → the churn= attr is simply omitted by packSignatures (nullptr-safe).

@@ -164,16 +164,19 @@ struct ForCandidatePageReq
 {
     std::string_view       task;
     std::string_view       verbName;       // "--for=" / "--pack-task=": next= names THEIR verb (#294 review)
-    std::string_view       ranking;        // #362 review, item 1: WHICH ranking paged this window — "for-lens"
-                                           //   (verbs_for.h computeLensRanking, the CLI --for/--pack-task pipeline)
-                                           //   or "mcp-lens" (the twins' shared inline pipeline, mcpverbs.h). The
-                                           //   two pipelines rank slightly different candidate sets (the un-paged
-                                           //   heads agree; the page denominator exposes the difference), so a
-                                           //   consumer that crosses dialects must not assume one list.
-    bool                   pasteHandle = true;   // false on MCP: no pasteable CLI argv — a CLI continuation would
-                                                //   walk a DIFFERENT list on the twins' pipeline (#362 review, item 1);
-                                                //   the machine attrs (next_offset=/limit=/next_tier=) remain for the
-                                                //   programmatic continuation through the same verb.
+    std::string_view       rankFlags;      // B2 (#362 review round 4): the argv fragment of every accepted flag
+                                           //   that changed THIS ranking — a pasted next= without them re-ranks
+                                           //   differently and walks a different list. CLI: --no-route,
+                                           //   --no-mention-boost, --no-doc-mention, --cochange-boost; the MCP
+                                           //   twins expose only no_route (their other lifts are env ablations,
+                                           //   not request surface). The bundle-shaping set is refused beside
+                                           //   a window instead (cli.h), so it never needs an echo.
+    bool                   pasteHandle = true;   // B1 (#362 review round 4): every surface carries the pasteable
+                                                //   handle now — the five page paths rank one list (a CLI window
+                                                //   forces fullDistribution, exactly what the twins always scored
+                                                //   with), so a CLI continuation of an MCP page walks the same
+                                                //   candidates. The guard stays so a future caller cannot
+                                                //   silently drop the handle.
     bool                   compactLegend = false;   // emit in the compact dialect (the default posture): the page is
                                                     //   compacted IN-DOC by the central layer (applyCompactDialect,
                                                     //   candidate-page) so the measured est_tokens=/over_ceiling=
@@ -197,7 +200,7 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
     using namespace rw;   // the file's idiom: function-scoped
     const std::string_view task        = p.task;
     const std::string_view verbName    = p.verbName;
-    const std::string_view rankingName = p.ranking;
+    const std::string_view rankFlags   = p.rankFlags;
     const bool             pasteHandle = p.pasteHandle;
     const bool             compactLegend = p.compactLegend;
     const std::string_view routeNote  = p.routeNote;
@@ -327,7 +330,6 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
              + "\" offset=\"" + std::to_string( win.begin )
              + "\" limit=\"" + std::to_string( pageLimit > 0 ? pageLimit : 0 )
              + "\" tier=\"" + ( below ? "below-cliff" : "head" ) + "\""
-             + ( rankingName.empty() ? std::string() : " ranking=\"" + std::string( rankingName ) + "\"" )
              + std::string( extra );
     };
     // THE PASTEABLE CONTINUATION HANDLE — the file page's next= contract: the argv that walks to
@@ -335,9 +337,10 @@ inline std::string forCandidatePageDoc( const rw::IngestResult& ing, const std::
     // no hint) and dropped when has_more="0" (#362 review, item 3: a last page handing back a next
     // that returns an empty page carrying the same next= is a loop with no exit).
     const auto buildNextAttr = [ & ]( std::size_t nextOff ) {
-        if( !pasteHandle ) { return std::string(); }   // MCP: no pasteable CLI argv — the machine attrs carry the resume (#362 review, item 1)
+        if( !pasteHandle ) { return std::string(); }   // no surface passes false today (B1); the guard stays honest
         if( nextOff >= candidateTotal ) { return std::string(); }
         std::string inv = nextFlag( verbName, task );   // THEIR verb: pasting continues the same verb (#294 review)
+        inv += rankFlags;   // B2: the ranking's own flags ride the handle, or the paste re-ranks a different list
         inv += " --token-budget=" + std::to_string( tokenBudget );
         if( pageLimit > 0 ) { inv += " --limit=" + std::to_string( pageLimit ); }
         inv += " --offset=" + std::to_string( nextOff );
