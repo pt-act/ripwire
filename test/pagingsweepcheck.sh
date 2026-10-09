@@ -877,15 +877,19 @@ PYM
 # B1: CLI --for, CLI --pack-task and MCP for/explore/pack_task must page ONE candidate list, with
 #     pruning in its DEFAULT state (no RIPWIRE_NO_PRUNE): a pruned ranking is exact only for its
 #     top-K, so a page that reads past it made total= depend on a performance optimisation
-#     (measured on src/: 931 vs 1232). Every walk runs to has_more="0" and the five row
-#     sequences must be identical, r= 1..total, each exactly once.
+#     (measured on src/: 931 vs 1232; the reproduction corpus there yields 1232 candidates).
+#     The arm anchors on $ROOT/test (152 candidates on the same task — past the 40 top-K the
+#     pruning is exact for, so the class is exercised) because walking 1232 heavy <d> rows on
+#     FIVE surfaces pushed the slowest macos shard past this gate's declared 1200s budget
+#     (#362 round 4, CI). Every walk runs to has_more="0" and the five row sequences must be
+#     identical, r= 1..total, each exactly once.
 # B2: every ACCEPTED flag that changes the ranking rides next= (or the paste re-ranks a different
 #     list — measured: --no-route page 1 total=563, its flagless next= pasted gave total=1).
 #     For each flag: page 1 with it, paste the returned next= verbatim (shlex), and the rows must
 #     equal page 2 of the SAME ranking taken directly. --cochange-boost needs RIPWIRE_DEV=1 on
 #     both runs (its gate), so its env rides the paste too. MCP `for` no_route: the page's next=
 #     (a CLI argv now, B1) must carry --no-route and paste onto the same list.
-PGCORPUS="$ROOT/src"
+PGCORPUS="$ROOT/test"
 PGCACHE="$TMP/pg_b1b2.cache"
 [ -s "$PGCACHE" ] || "$BIN" "$PGCORPUS" --cache="$PGCACHE" >/dev/null 2>&1
 PGBIN="$BIN" PGROOT="$PGCORPUS" PGCACHE="$PGCACHE" python3 <<'PGB'
@@ -922,15 +926,24 @@ def mcp( verb, args ):
             return msg["result"]["content"][0]["text"]
     return ""
 def walk_mcp( verb, budget, limit ):
-    seq, off, pages = [], 0, 0
-    while pages < 80:
+    # page 1 alone (its next_offset names page 2's window), page 2 in its own call: two pages
+    # per surface on this corpus (152 candidates, limit 80), and the arm FAILS loudly if the
+    # corpus ever grows past two pages — raise the budget here, not a silent partial walk.
+    def page( off ):
         doc = mcp( verb, { "path": CORPUS, "task": "how does pagerank converge",
                             "budget_tokens": budget, "limit": limit, "offset": off } )
-        if not doc.startswith( "<sigs" ): no( "B1 walk: MCP " + verb + " page at offset=" + str( off ) + " is not a <sigs page" ); return None, None
+        if not doc.startswith( "<sigs" ):
+            no( "B1 walk: MCP " + verb + " page at offset=" + str( off ) + " is not a <sigs page" ); return None
+        return doc
+    seq, off, pages = [], 0, 0
+    while pages < 4:
+        doc = page( off )
+        if doc is None: return None, None
         a = attrs_of( doc ); seq += rows_of( doc ); pages += 1
         if a.get( "has_more" ) != "1": return seq, a
         off = int( a["next_offset"] )
-    no( "B1 walk: MCP " + verb + " 80 pages without has_more=0" ); return None, None
+    no( "B1 walk: MCP " + verb + " on " + CORPUS + " needs more than 4 pages - raise the arm's page cap here, not a silent partial walk" )
+    return None, None
 
 # B1 — the five surfaces, pruning default, one list.
 def walk_cli( verb_flag, budget, limit ):
@@ -944,12 +957,12 @@ def walk_cli( verb_flag, budget, limit ):
         if a2.get( "has_more" ) != "1": return seq, a2
         off = int( a2["next_offset"] )
     no( "B1 walk: " + verb_flag + " 80 pages without has_more=0" ); return None, None
-seq_for,  a_for  = walk_cli( "--for=", 999999, 250 )
-seq_pack, a_pack = walk_cli( "--pack-task=", 999999, 250 )
+seq_for,  a_for  = walk_cli( "--for=", 999999, 80 )
+seq_pack, a_pack = walk_cli( "--pack-task=", 999999, 80 )
 total = int( a_for["total"] ) if a_for else -1
-seq_mfor, a_mfor = walk_mcp( "for", 999999, 250 )
-seq_mexp, a_mexp = walk_mcp( "explore", 999999, 250 )
-seq_mpk,  a_mpk  = walk_mcp( "pack_task", 999999, 250 )
+seq_mfor, a_mfor = walk_mcp( "for", 999999, 80 )
+seq_mexp, a_mexp = walk_mcp( "explore", 999999, 80 )
+seq_mpk,  a_mpk  = walk_mcp( "pack_task", 999999, 80 )
 if None in ( seq_for, seq_pack, seq_mfor, seq_mexp, seq_mpk ):
     no( "B1: a walk did not terminate — see the failures above" )
 else:
