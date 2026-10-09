@@ -1802,6 +1802,14 @@ inline void priceForTaskRoot( std::string& doc, std::size_t budgetTokens )
     rw::spliceRootAttrs( doc, rootAttrs );
 }
 
+// #362 review round 4, follow-up (quality bar): the twins' B2 rank-flags fragment, named once -
+// the inline conditional appeared in both twins' page calls and the second read pushed
+// packTaskText past its complexity bar.
+inline std::string_view mcpPageRankFlags( bool noRoute )
+{
+    return noRoute ? std::string_view( " --no-route" ) : std::string_view();
+}
+
 inline std::optional<std::string> forTaskText( const std::string& root, const std::string& task, RedactCounts* redact = nullptr,
                                 std::size_t budgetTokens = 0, bool noRoute = false,
                                 McpPageArgs page = {},   // L-W: limit/offset select the FILE PAGE (forpage.h), the CLI --for --limit twin
@@ -1970,7 +1978,7 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
             // emitted in-doc (schema= present) so the ref posture reduces it like any other spec-keyed
             // answer — the outer layer sees AlreadyCompact and passes it through.
             return forCandidatePageDoc( ing, lensRank, cut, ForCandidatePageReq{ task, "--for=",
-                                        noRoute ? std::string_view( " --no-route" ) : std::string_view(),
+                                        mcpPageRankFlags( noRoute ),
                                         /*pasteHandle=*/true, /*compactLegend=*/true,
                                         routeNoteOf( rc, shape, noRoute ), mcpRootArg,
                                         redact, gitstamp::stampAt( root ), budgetTokens, page.limit, page.offset } );
@@ -4160,6 +4168,7 @@ struct PackTaskForm
     bool          noRoute        = false;   // the CLI --no-route twin
     McpPageArgs   page;                     // limit/offset: the candidate page under a budget, the file page without
 };
+
 inline std::string packTaskText( const std::string& root, const std::string& task, std::size_t budgetTokens,
                                  RedactCounts* redact = nullptr, const PackTaskForm& form = {} )
 {
@@ -4275,7 +4284,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
             // #362 review round 4 (B1/B2): one list across all five page paths — the same pasteable
             // next= as the CLI pages, no_route echoed so the pasted continuation re-ranks identically.
             return forCandidatePageDoc( ing, lr.rank, cut, ForCandidatePageReq{ task, "--pack-task=",
-                                        noRoute ? std::string_view( " --no-route" ) : std::string_view(),
+                                        mcpPageRankFlags( noRoute ),
                                         /*pasteHandle=*/true, /*compactLegend=*/true,
                                         lr.routeNote, mcpRootArg,
                                         redact, gitstamp::stampAt( root ), budgetTokens, pageLimit, pageOffset } );

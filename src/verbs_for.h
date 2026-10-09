@@ -2241,6 +2241,14 @@ inline std::string forPageRankFlagArgv( const rw::Config& cfg )
     return s;
 }
 
+// #362 review round 4, follow-up (quality bar): the windowed-page predicate, named once — the
+// inline spelling appeared twice (runForLens's bundle path, runPackTask's B1 gate) and the second
+// read pushed runPackTask past its complexity bar.
+inline bool candidatePageWindowed( const rw::Config& cfg )
+{
+    return cfg.tokenBudget != 0 && ( cfg.pageLimit > 0 || cfg.pageOffset > 0 );
+}
+
 std::optional<int> runForLens( const MainDispatch& d )
 {
     using namespace rw;
@@ -3828,7 +3836,7 @@ std::optional<int> runPackTask( const MainDispatch& d )
     // exact only for its top-K, so total= and the far pages would depend on a performance optimisation
     // (measured: 931 vs 1232 candidates on src/). The rule --for's bundle path already follows. The un-paged
     // bundle keeps the H2 pruning: its consumers read only the head.
-    const bool packWindowPages = cfg.tokenBudget != 0 && ( cfg.pageLimit > 0 || cfg.pageOffset > 0 );
+    const bool packWindowPages = candidatePageWindowed( cfg );
     LensRanking lr = computeLensRanking( d, task, /*compactCandidate=*/false, /*fullDistribution=*/packWindowPages );
 
     // Q3 per-file churn (mirror --for): only mined on the --for git pass, so here it stays empty/zero when

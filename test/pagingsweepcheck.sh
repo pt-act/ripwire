@@ -878,11 +878,13 @@ PYM
 #     pruning in its DEFAULT state (no RIPWIRE_NO_PRUNE): a pruned ranking is exact only for its
 #     top-K, so a page that reads past it made total= depend on a performance optimisation
 #     (measured on src/: 931 vs 1232; the reproduction corpus there yields 1232 candidates).
-#     The arm anchors on $ROOT/test (152 candidates on the same task — past the 40 top-K the
-#     pruning is exact for, so the class is exercised) because walking 1232 heavy <d> rows on
-#     FIVE surfaces pushed the slowest macos shard past this gate's declared 1200s budget
-#     (#362 round 4, CI). Every walk runs to has_more="0" and the five row sequences must be
-#     identical, r= 1..total, each exactly once.
+#     The walk anchors on $ROOT/test (152 candidates on the same task) because walking 1232
+#     heavy <d> rows on FIVE surfaces pushed the slowest macos shard past this gate's declared
+#     1200s budget (#362 round 4, CI). The walk proves order and completeness; on test/ the
+#     pruning drops NOTHING (0a8432a1 answers the same total with and without
+#     RIPWIRE_NO_PRUNE), so B1b below adds one page per surface on src/ — a corpus where the
+#     pruning does drop candidates — and asserts all five totals are equal. Every walk runs to
+#     has_more="0" and the five row sequences must be identical, r= 1..total, each exactly once.
 # B2: every ACCEPTED flag that changes the ranking rides next= (or the paste re-ranks a different
 #     list — measured: --no-route page 1 total=563, its flagless next= pasted gave total=1).
 #     For each flag: page 1 with it, paste the returned next= verbatim (shlex), and the rows must
@@ -913,6 +915,10 @@ def cli( extra, env=None ):
     t = subprocess.run( [ BIN, CORPUS, "--cache=" + CACHE, "--legend=full" ] + extra,
                          capture_output = True, text = True, env = e ).stdout
     return t
+def cli_on( corpus, cache, extra, env=None ):
+    e = dict( os.environ ); e.update( env or {} )
+    return subprocess.run( [ BIN, corpus, "--cache=" + cache, "--legend=full" ] + extra,
+                            capture_output = True, text = True, env = e ).stdout
 def mcp( verb, args ):
     reqs = [ '{"jsonrpc":"2.0","id":1,"method":"initialize"}',
              json.dumps( { "jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -925,10 +931,23 @@ def mcp( verb, args ):
         if msg.get( "id" ) == 2:
             return msg["result"]["content"][0]["text"]
     return ""
+def mcp_on( corpus, verb, args ):
+    reqs = [ '{"jsonrpc":"2.0","id":1,"method":"initialize"}',
+             json.dumps( { "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                            "params": { "name": verb, "arguments": args } } ) ]
+    p = subprocess.run( [ BIN, "--mcp" ], input = "\n".join( reqs ) + "\n",
+                        capture_output = True, text = True )
+    for line in p.stdout.splitlines():
+        try:    msg = json.loads( line )
+        except ValueError: continue
+        if msg.get( "id" ) == 2:
+            return msg["result"]["content"][0]["text"]
+    return ""
 def walk_mcp( verb, budget, limit ):
-    # page 1 alone (its next_offset names page 2's window), page 2 in its own call: two pages
-    # per surface on this corpus (152 candidates, limit 80), and the arm FAILS loudly if the
-    # corpus ever grows past two pages — raise the budget here, not a silent partial walk.
+    # walked page by page (each page's next_offset names the next window), capped at 4 pages:
+    # the pack_task twin can serve fewer rows per page than its window (its shell reserves
+    # differ), so 152 candidates are not always 2 pages; the cap FAILs loudly rather than
+    # walking silently short.
     def page( off ):
         doc = mcp( verb, { "path": CORPUS, "task": "how does pagerank converge",
                             "budget_tokens": budget, "limit": limit, "offset": off } )
@@ -964,7 +983,7 @@ seq_mfor, a_mfor = walk_mcp( "for", 999999, 80 )
 seq_mexp, a_mexp = walk_mcp( "explore", 999999, 80 )
 seq_mpk,  a_mpk  = walk_mcp( "pack_task", 999999, 80 )
 if None in ( seq_for, seq_pack, seq_mfor, seq_mexp, seq_mpk ):
-    no( "B1: a walk did not terminate — see the failures above" )
+    no( "B1: a walk did not terminate - see the failures above" )
 else:
     walks = { "cli --for": seq_for, "cli --pack-task": seq_pack, "mcp for": seq_mfor,
               "mcp explore": seq_mexp, "mcp pack_task": seq_mpk }
@@ -979,6 +998,34 @@ else:
         diff = [ k for k, w in walks.items() if w != base ]
         no( "B1: walks differ (" + ",".join( diff ) + ") or the sequence is not r=1..total="
             + str( total ) + " (got " + str( len( base ) ) + " rows)" )
+
+# B1b - the test/ walk above proves order and completeness, but on test/ the pruning drops
+# NOTHING (a 0a8432a1 build answers the same total with and without RIPWIRE_NO_PRUNE), so it
+# cannot catch B1 by itself: one page per surface on src/ (a corpus where the pruning does drop
+# candidates - 931 pruned vs 1232 exhaustive on 0a8432a1) asserts all five totals are equal.
+SRCCACHE = os.environ.get( "PGSRCCACHE", os.path.join( os.path.dirname( CACHE ), "src.cache" ) )
+if not os.path.isfile( SRCCACHE ) or os.path.getsize( SRCCACHE ) == 0:
+    subprocess.run( [ BIN, os.path.join( os.path.dirname( CORPUS ), "src" ), "--cache=" + SRCCACHE ],
+                    capture_output = True )
+SRCROOT = os.path.join( os.path.dirname( CORPUS ), "src" )
+src_totals = {}
+for verb_flag in ( "--for=", "--pack-task=" ):
+    doc = cli_on( SRCROOT, SRCCACHE, [ verb_flag + "how does pagerank converge",
+                                        "--token-budget=1000", "--limit=1" ] )
+    a = attrs_of( doc )
+    src_totals[ "cli " + verb_flag ] = int( a["total"] ) if a else -1
+for verb in ( "for", "explore", "pack_task" ):
+    doc = mcp_on( SRCROOT, verb, { "path": SRCROOT, "task": "how does pagerank converge",
+                                    "budget_tokens": 1000, "limit": 1, "offset": 0 } )
+    a = attrs_of( doc ) if doc.startswith( "<sigs" ) else {}
+    src_totals[ "mcp " + verb ] = int( a["total"] ) if a else -1
+vals = sorted( set( src_totals.values() ) )
+if len( vals ) == 1 and vals[ 0 ] > 0:
+    ok( "B1b: all five surfaces report the same total= (" + str( vals[ 0 ] ) + ") on the pruning-sensitive corpus - "
+        + ", ".join( k + "=" + str( v ) for k, v in src_totals.items() ) )
+else:
+    no( "B1b: totals differ across the five surfaces on the pruning-sensitive corpus: "
+        + ", ".join( k + "=" + str( v ) for k, v in src_totals.items() ) )
 
 # B2 — each accepted ranking flag rides next=; the paste continues the same list.
 # (a BROAD-route task: the name-exact route can answer total=1 has_more="0", where no next=
@@ -999,8 +1046,11 @@ for flag, env in ( ( "--no-route", {} ), ( "--no-mention-boost", {} ), ( "--no-d
     else:
         no( "B2: pasting " + flag + "'s next= walked a different list — pasted total="
             + str( a2p.get( "total" ) ) + " vs page-1 total=" + str( a1.get( "total" ) ) )
-# MCP no_route: the page's next= is a CLI argv now — it must carry --no-route and paste onto the same list.
-p1 = mcp( "for", { "path": CORPUS, "task": "how does pagerank converge", "budget_tokens": 3000,
+# MCP no_route: the page's next= is a CLI argv now — it must carry --no-route and paste onto the
+# same list. "packSignatures budget" is the divergence-catching task: routed it answers
+# total=0 (name-exact, nothing found), unrouted total=87 — so a pasted handle that lost
+# --no-route walks a DIFFERENT list and the row comparison fails, not just the echo check.
+p1 = mcp( "for", { "path": CORPUS, "task": "packSignatures budget", "budget_tokens": 3000,
                     "limit": 40, "no_route": True } )
 a1 = attrs_of( p1 )
 nxt = a1.get( "next", "" )
@@ -1008,7 +1058,7 @@ if "--no-route" not in nxt:
     no( "B2: MCP for no_route page does not echo --no-route in next=: " + nxt[:80] )
 else:
     pasted = cli( shlex.split( html.unescape( nxt ) ) )
-    direct = cli( [ "--no-route", "--for=how does pagerank converge", "--token-budget=3000", "--limit=40",
+    direct = cli( [ "--no-route", "--for=packSignatures budget", "--token-budget=3000", "--limit=40",
                     "--offset=" + a1["next_offset"] ] )
     if rows_of( pasted ) == rows_of( direct ) and attrs_of( pasted ).get( "total" ) == a1.get( "total" ):
         ok( "B2: MCP for no_route echoes --no-route; the pasted CLI handle continues the MCP page's list" )

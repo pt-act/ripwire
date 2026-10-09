@@ -1111,9 +1111,9 @@ page ONE candidate list: the CLI pages force the ranking's full distribution und
 rule `--for`'s bundle path already followed), exactly the exhaustive scoring the MCP twins always
 used, so the `ranking=` attribute the first round carried is gone — there is nothing left to
 distinguish. Every page, CLI or MCP, carries the same pasteable `next=`/`next_tier=`: an MCP page's
-handle is a CLI argv now, and it walks the same list. Every accepted flag that changes the ranking
-(`--no-route`, `--no-mention-boost`, `--no-doc-mention`, `--cochange-boost` on the CLI; `no_route`
-on the MCP twins) rides `next=`, so a pasted continuation re-ranks identically — the
+handle is a CLI argv now, and it walks the same list. Every accepted ranking flag
+(the CLI's `--no-route`, `--no-mention-boost`, `--no-doc-mention`, `--cochange-boost`; the twins'
+`no_route`) rides `next=`, so a pasted continuation re-ranks identically — the
 `test/pagingsweepcheck.sh` walk arms pin all five surfaces to `has_more="0"` with identical row
 sequences and pin each flag's echo. The `tools/list` manifest grows 46,732 → 46,916 B (measured
 against train 25's `main`; descriptions identical, and the +184 B of schema is `explore`'s
