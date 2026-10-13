@@ -286,11 +286,20 @@ inline std::size_t regexGroupModifierLength( const std::string& pat, std::size_t
     return 2;       // an unterminated name: the compile probe below owns that error
 }
 
+// The two refusal sentences below share their opening — the construct, and the quantifier applied to it. Spelled
+// out in both, that opening was twenty-four identical normalized tokens, which --quality-delta reports as a
+// duplication pair; it lives here once. The caller supplies the clause naming WHAT repeats, and the concatenation
+// is the same bytes either way (regexguardcheck.sh pins the wording at every entry point).
+inline std::string catastrophicRegexPrologue( char outerQuant )
+{
+    return std::string( "catastrophic backtracking: the unbounded quantifier '" ) + outerQuant + "' is applied to ";
+}
+
 // The one refusal this screen emits, kept out of the scan loop so the loop reads as the small state
 // machine it is. `outerQuant` is the quantifier character that was applied to the offending group.
 inline std::string catastrophicRegexMessage( char outerQuant )
 {
-    return   std::string( "catastrophic backtracking: the unbounded quantifier '" ) + outerQuant + "' is applied to a group whose contents "
+    return   catastrophicRegexPrologue( outerQuant ) + "a group whose contents "
              "already repeat (the (X+)+ / (X*)* / (X+)* / (X{n,})+ family, and equally the bounded-inner (X?)+ / (X{m,n})+ / (X{n})+ one). "
              "Every way of splitting the input between the inner and the outer repetition is a separate path, so matching a non-matching "
              "line costs time exponential in its length; a BOUNDED inner is no defence, because it is ambiguity and not unboundedness that "
@@ -637,7 +646,7 @@ inline bool regexAlternationOverlaps( const std::string& pat, std::size_t bodyBe
 // workaround — bounding the OUTER quantifier — works for every pattern in this class, so it carries alone.
 inline std::string catastrophicRegexAlternationMessage( char outerQuant )
 {
-    return   std::string( "catastrophic backtracking: the unbounded quantifier '" ) + outerQuant + "' is applied to an alternation whose "
+    return   catastrophicRegexPrologue( outerQuant ) + "an alternation whose "
              "branches the structural screen cannot PROVE are disjoint. A branch carries no quantifier of its own, so the "
              "nested-repetition refusal cannot see this one, and a branch of more than one character is refused because its SHAPE is "
              "indistinguishable, without matching it, from one that overlaps another: every way of splitting the input between the "
@@ -645,21 +654,76 @@ inline std::string catastrophicRegexAlternationMessage( char outerQuant )
              "length. Workaround: make the OUTER bounded with an explicit interval ('(get|getResponse){1,5}')";
 }
 
+// One frame per OPEN group. M2-c replaced the bare flag vector with a frame because the alternation arm needs
+// two more things about a group: where its own BODY starts (a group modifier is not body), and where its OWN
+// top-level '|' characters are — a '|' inside a nested group belongs to that group, not to this one, and
+// treating it as this group's would split a branch in the wrong place. File scope, not a local of the scan
+// below, because regexCloseGroup (which owns the group-close verdict) reads and writes these too.
+struct RegexGroupFrame
+{
+    bool                     hasQuantifierInside = false;
+    std::size_t              bodyBegin           = 0;
+    std::vector<std::size_t> topLevelPipes;
+};
+
+// The verdict made when a group CLOSES, in two arms and in this order:
+//   (1) a quantifier INSIDE the group, repeated by an unbounded quantifier ON the group — the (X+)+ family;
+//   (2) M2-c's alternation arm: a group whose own top-level branches the screen cannot prove disjoint, repeated
+//       by an unbounded quantifier — (a|a)+, and the conservative (cat|dog)+ / X|[^X] class it refuses with it.
+// Arm (2) runs ONLY when arm (1) has not refused, so every pattern refused before M2-c keeps the message it had
+// (regexguardcheck.sh asserts that wording at every entry point). Returns the refusal, or nullopt when the group
+// is admissible — the caller owns the bookkeeping that follows.
+inline std::optional<std::string> regexCloseGroupVerdict( const std::string& pat, std::size_t closeAt, const RegexGroupFrame& frame )
+{
+    const RegexQuantifier quant = regexQuantifierAt( pat, closeAt + 1 );
+    if( quant.isPresent && quant.isUnbounded && frame.hasQuantifierInside )
+    {
+        return catastrophicRegexMessage( pat[ closeAt + 1 ] );
+    }
+    if( quant.isPresent && quant.isUnbounded && !frame.topLevelPipes.empty()
+        && regexAlternationOverlaps( pat, frame.bodyBegin, closeAt, frame.topLevelPipes ) )
+    {
+        return catastrophicRegexAlternationMessage( pat[ closeAt + 1 ] );
+    }
+    return std::nullopt;
+}
+
+// A ')' in the scan: pop the frame, judge it (regexCloseGroupVerdict), fold its verdict into the parent group,
+// and step `i` past the group's own quantifier so the scan does not re-read it. Returns the refusal when the
+// group is catastrophic, else nullopt. `i` holds the ')' index on entry and the quantifier's last index on exit.
+// Kept out of the scan loop so the loop reads as the small state machine it is.
+inline std::optional<std::string> regexCloseGroup( const std::string& pat, std::size_t& i, std::vector<RegexGroupFrame>& frames )
+{
+    if( frames.empty() )
+    {
+        return std::nullopt; // unbalanced: the compile probe below owns that error
+    }
+    const RegexGroupFrame frame = std::move( frames.back() );
+    frames.pop_back();
+
+    if( std::optional<std::string> refusal = regexCloseGroupVerdict( pat, i, frame ) )
+    {
+        return refusal;
+    }
+
+    const RegexQuantifier quant = regexQuantifierAt( pat, i + 1 );
+    // the group is now an ATOM of its parent: a quantifier anywhere inside it — or ON it — is a quantifier
+    // inside the parent too, which is what makes ((a+))+, ((a)+)+ and ((a)?)+ visible
+    if( !frames.empty() && ( frame.hasQuantifierInside || quant.isPresent ) )
+    {
+        frames.back().hasQuantifierInside = true;
+    }
+    if( quant.isPresent )
+    {
+        i += quant.lengthCount; // step over the quantifier we just judged
+    }
+    return std::nullopt;
+}
+
 inline std::optional<std::string> catastrophicRegexConstruct( const std::string& pat )
 {
-    // One frame per OPEN group. M2-c replaced the bare flag vector with a frame because the alternation arm
-    // needs two more things about a group: where its own BODY starts (a group modifier is not body), and
-    // where its OWN top-level '|' characters are — a '|' inside a nested group belongs to that group, not
-    // to this one, and treating it as this group's would split a branch in the wrong place.
-    struct GroupFrame
-    {
-        bool                     hasQuantifierInside = false;
-        std::size_t              bodyBegin           = 0;
-        std::vector<std::size_t> topLevelPipes;
-    };
-
-    std::vector<GroupFrame> frames;
-    bool                    isInsideClass = false;
+    std::vector<RegexGroupFrame> frames;
+    bool                         isInsideClass = false;
 
     for( std::size_t i = 0; i < pat.size(); ++i )
     {
@@ -687,39 +751,9 @@ inline std::optional<std::string> catastrophicRegexConstruct( const std::string&
         }
         if( c == ')' )
         {
-            if( frames.empty() )
+            if( std::optional<std::string> refusal = regexCloseGroup( pat, i, frames ) )
             {
-                continue; // unbalanced: the compile probe below owns that error
-            }
-
-            const GroupFrame frame = std::move( frames.back() );
-            frames.pop_back();
-
-            const RegexQuantifier quant = regexQuantifierAt( pat, i + 1 );
-
-            if( quant.isPresent && quant.isUnbounded && frame.hasQuantifierInside )
-            {
-                return catastrophicRegexMessage( pat[ i + 1 ] );
-            }
-            // M2-c: the arm above cannot see an alternation whose branches carry no quantifier, so the
-            // second arm judges this group's own top-level branches. It runs ONLY when the first arm has
-            // not already refused, so every pattern refused before this change keeps the message it had —
-            // regexguardcheck.sh asserts that wording at every entry point.
-            if( quant.isPresent && quant.isUnbounded && !frame.topLevelPipes.empty()
-                && regexAlternationOverlaps( pat, frame.bodyBegin, i, frame.topLevelPipes ) )
-            {
-                return catastrophicRegexAlternationMessage( pat[ i + 1 ] );
-            }
-
-            // the group is now an ATOM of its parent: a quantifier anywhere inside it — or ON it — is a
-            // quantifier inside the parent too, which is what makes ((a+))+, ((a)+)+ and ((a)?)+ visible
-            if( !frames.empty() && ( frame.hasQuantifierInside || quant.isPresent ) )
-            {
-                frames.back().hasQuantifierInside = true;
-            }
-            if( quant.isPresent )
-            {
-                i += quant.lengthCount; // step over the quantifier we just judged
+                return refusal;
             }
             continue;
         }
@@ -1582,12 +1616,12 @@ inline constexpr std::uint32_t kRegexFileMatchBudget = 1000000;   // per file; >
 
 // RIPWIRE_FAULT_REGEX_BUDGET=1 caps the budget to a handful of attempts, the same idiom as
 // RIPWIRE_FAULT_REGEX_LINE_BOUND (a boolean switch that makes an engine-only path reachable everywhere). Non-NDEBUG
-// only, read ONCE per process: a release build compiles the branch to the constant.
+// only, read ONCE per process through rw::faultSwitchOnOnce: a release build compiles the branch to the constant.
 inline constexpr std::uint32_t kRegexFaultBudget = 4;
+struct RegexBudgetFaultTag {};   // this switch's own faultSwitchOnOnce cache (infra/emit.h)
 inline std::uint32_t regexFileMatchBudget() noexcept
 {
-    static const bool isCapped = rw::faultSwitchOn( "RIPWIRE_FAULT_REGEX_BUDGET" );
-    return isCapped ? kRegexFaultBudget : kRegexFileMatchBudget;
+    return rw::faultSwitchOnOnce<RegexBudgetFaultTag>( "RIPWIRE_FAULT_REGEX_BUDGET" ) ? kRegexFaultBudget : kRegexFileMatchBudget;
 }
 
 // The line loop behind GuardedRegex::forEachLineMatch. The engine may throw here; the member holds the boundary, and

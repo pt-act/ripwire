@@ -623,6 +623,54 @@ void joinGrepScanPrefetch( std::thread& worker )
 // (src/regexguard.h, kRegexFileMatchBudget) stopping a scan the screen admitted. The shape, the count and the exit
 // code are identical; only the quoted REASON and the file named differ, so the reader is pointed at the guard rather
 // than at an engine complexity budget libstdc++ does not have.
+
+// A stopped --regex scan, resolved to the three facts the refusal sentence needs: which cause stopped it (so the
+// right advice is quoted), the reason sentence to quote, and the file to name.
+struct AbandonedRegexScan
+{
+    bool             isBudgetCause = false;
+    std::string_view reason;
+    std::string_view firstPath;
+};
+
+// The file named for a stopped scan: the lowest-fileId indexed one, else the first unindexed one. A single real
+// root rewrites an indexed path root-relative — the same spelling every other verb reports a file with.
+inline std::string_view abandonedRegexFirstPath( const rw::Config& cfg, const rw::IngestResult& ing,
+                                                 const rw::GrepCollection& found, const rw::GrepAuxCollection& aux, bool isBudgetCause )
+{
+    const std::uint32_t indexedCount = isBudgetCause ? found.regexBudgetedFiles : found.regexAbandonedFiles;
+    if( indexedCount == 0 )
+    {
+        return isBudgetCause ? std::string_view( aux.firstRegexBudgetedPath ) : std::string_view( aux.firstRegexAbandonedPath );
+    }
+    const std::uint32_t fileId     = isBudgetCause ? found.firstRegexBudgetedFile : found.firstRegexAbandonedFile;
+    const bool          singleRoot = ing.realPaths.empty() && cfg.roots.size() == 1;
+    return singleRoot ? rw::sarif::rootRelativeUri( ing.files[ fileId ], rw::sarif::rootPrefixOf( std::string( cfg.roots[0] ) ) )
+                      : std::string_view( ing.files[ fileId ] );
+}
+
+// Phase 2: when the guard's per-file MATCH BUDGET is what stopped at least one file, quote ITS reason and name
+// ITS first file. Sending a reader to "the engine gave up" on libstdc++ would send them to a complexity budget
+// that standard library does not have (src/regexguard.h, kRegexBudgetReason vs kRegexAbandonedReason).
+inline AbandonedRegexScan resolveAbandonedRegexScan( const rw::Config& cfg, const rw::IngestResult& ing,
+                                                     const rw::GrepCollection& found, const rw::GrepAuxCollection& aux )
+{
+    const bool isBudgetCause = ( found.regexBudgetedFiles + aux.regexBudgetedFiles ) != 0;
+    return { isBudgetCause,
+             isBudgetCause ? rw::kRegexBudgetReason : rw::kRegexAbandonedReason,
+             abandonedRegexFirstPath( cfg, ing, found, aux, isBudgetCause ) };
+}
+
+// The refusal sentence. Its head — the pattern, the reason, the count and the file — is identical for both causes;
+// only the trailing ADVICE differs, so the caller supplies that (see the cause-specific wording at the call site).
+inline void emitAbandonedRegexRefusal( std::string_view pattern, std::string_view reason, std::uint32_t count,
+                                       std::string_view firstPath, std::string_view advice )
+{
+    rw::emitTo( stderr, "ripwire: --regex='{}' refused, no hit is reported: {} in {} file(s), first {} — the hits collected before that "
+                        "point would be a floor this verb cannot state ({})\n",
+                pattern, reason, count, firstPath, advice );
+}
+
 static bool refuseAbandonedRegexScan( const rw::Config& cfg, const rw::IngestResult& ing, const rw::GrepCollection& found, const rw::GrepAuxCollection& aux )
 {
     const std::uint32_t abandonedCount = found.regexAbandonedFiles + aux.regexAbandonedFiles;
@@ -630,39 +678,15 @@ static bool refuseAbandonedRegexScan( const rw::Config& cfg, const rw::IngestRes
     {
         return false;
     }
-    const bool        singleRoot = ing.realPaths.empty() && cfg.roots.size() == 1;
-    const std::string rootPrefix = singleRoot ? rw::sarif::rootPrefixOf( std::string( cfg.roots[0] ) ) : std::string();
+    const AbandonedRegexScan cause = resolveAbandonedRegexScan( cfg, ing, found, aux );
 
-    // Phase 2: when the guard's per-file MATCH BUDGET is what stopped at least one file, quote ITS reason and name
-    // ITS first file. Sending a reader to "the engine gave up" on libstdc++ would send them to a complexity budget
-    // that standard library does not have (src/regexguard.h, kRegexBudgetReason vs kRegexAbandonedReason).
-    const bool             isBudgetCause = ( found.regexBudgetedFiles + aux.regexBudgetedFiles ) != 0;
-    const std::string_view reason        = isBudgetCause ? rw::kRegexBudgetReason : rw::kRegexAbandonedReason;
-    const std::uint32_t    indexedCount  = isBudgetCause ? found.regexBudgetedFiles : found.regexAbandonedFiles;
-    const std::string_view firstPath     = indexedCount == 0
-                                             ? ( isBudgetCause ? std::string_view( aux.firstRegexBudgetedPath ) : std::string_view( aux.firstRegexAbandonedPath ) )
-                                             : singleRoot ? rw::sarif::rootRelativeUri( ing.files[ isBudgetCause ? found.firstRegexBudgetedFile
-                                                                                                                 : found.firstRegexAbandonedFile ], rootPrefix )
-                                                          : std::string_view( ing.files[ isBudgetCause ? found.firstRegexBudgetedFile
-                                                                                                       : found.firstRegexAbandonedFile ] );
-
-    // The trailing advice is cause-appropriate. A budget stop is fixed by narrowing the pattern or the corpus, not by
-    // rewriting an alternation; and the old tail named (a|a)+ as the pattern to avoid, which the structural screen
-    // now REFUSES at admission, so a reader reaching THIS message can no longer have written it (PM-1's honesty class).
-    if( isBudgetCause )
-    {
-        rw::emitTo( stderr, "ripwire: --regex='{}' refused, no hit is reported: {} in {} file(s), first {} — the hits collected before that "
-                            "point would be a floor this verb cannot state (narrow the pattern or the corpus: a file could not be scanned "
-                            "within the guard's per-file match budget)\n",
-                    cfg.grep, reason, abandonedCount, firstPath );
-    }
-    else
-    {
-        rw::emitTo( stderr, "ripwire: --regex='{}' refused, no hit is reported: {} in {} file(s), first {} — the hits collected before that "
-                            "point would be a floor this verb cannot state (bound the OUTER quantifier of the pattern, or narrow the search, "
-                            "so it cannot backtrack on the subject)\n",
-                    cfg.grep, reason, abandonedCount, firstPath );
-    }
+    // The trailing advice is cause-appropriate. A budget stop is fixed by narrowing the pattern or the corpus, not
+    // by rewriting an alternation; and the old tail named (a|a)+ as the pattern to avoid, which the structural
+    // screen now REFUSES at admission, so a reader reaching THIS message can no longer have written it (PM-1).
+    const std::string_view advice = cause.isBudgetCause
+                                        ? "narrow the pattern or the corpus: a file could not be scanned within the guard's per-file match budget"
+                                        : "bound the OUTER quantifier of the pattern, or narrow the search, so it cannot backtrack on the subject";
+    emitAbandonedRegexRefusal( cfg.grep, cause.reason, abandonedCount, cause.firstPath, advice );
     return true;
 }
 

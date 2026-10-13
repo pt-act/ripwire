@@ -1164,13 +1164,27 @@ struct GrepScanVerdict
     bool          isBudgeted        = false;
 };
 
+// The 1-based line number of `pos` in the literal path, counting only the newlines between `scanned` and `pos` and
+// advancing `scanned` to `pos`. Kept out of grepScanText so that function reads as its two scan strategies and not
+// as a scan loop with a cursor inlined into it.
+inline std::uint32_t lineAtOffset( const std::string& text, std::size_t pos, std::size_t& scanned, std::uint32_t& line ) noexcept
+{
+    for( std::size_t i = scanned; i < pos; ++i )
+    {
+        if( text[i] == '\n' )
+        {
+            ++line;
+        }
+    }
+    scanned = pos;
+    return line;
+}
+
 [[nodiscard]] inline GrepScanVerdict grepScanText( const std::string& text, const std::string& pat, const GuardedRegex* re,
                                                    std::size_t hitCapCount, std::vector<GrepMatchSite>& out, RegexLinePolicy linePolicy = {} )
 {
     std::uint32_t line    = 1;
     std::size_t   scanned = 0;
-    const auto    lineAt  = [ & ]( std::size_t pos ) noexcept
-    { for( std::size_t i = scanned; i < pos; ++i ) { if( text[i] == '\n' ) { ++line; } } scanned = pos; return line; };
 
     if( re != nullptr )
     {
@@ -1239,7 +1253,7 @@ struct GrepScanVerdict
         std::size_t pos = text.find( pat );
         while( pos != std::string::npos )
         {
-            out.push_back( { lineAt( pos ), std::uint32_t( pos ) } );
+            out.push_back( { lineAtOffset( text, pos, scanned, line ), std::uint32_t( pos ) } );
             if( out.size() >= hitCapCount )
             {
                 break;
