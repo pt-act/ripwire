@@ -1158,6 +1158,10 @@ struct GrepScanVerdict
 {
     bool          isAbandoned       = false;
     std::uint32_t regexLinesSkipped = 0;
+    // Phase 2: the abandonment was the GUARD's per-file match budget, not the engine giving up. isAbandoned is true
+    // either way (the file's answer is unknown past that point, so it is counted and refused identically); this flag
+    // only selects WHICH sentence the refusal quotes, so a reader is sent to the right cause.
+    bool          isBudgeted        = false;
 };
 
 [[nodiscard]] inline GrepScanVerdict grepScanText( const std::string& text, const std::string& pat, const GuardedRegex* re,
@@ -1216,11 +1220,19 @@ struct GrepScanVerdict
         } );
         if( scan.verdict == RegexVerdict::Exhausted )
         {
-            DISCLOSE( Diagnostics::answerRefused, "the verdict makes --regex refuse by name (the file and the cause on stderr, exit 1); no hit is reported",
-                      "grep: the regex engine abandoned a match (catastrophic backtracking?) — the verb refuses the answer" );
+            if( scan.budgeted )
+            {
+                DISCLOSE( Diagnostics::answerRefused, "the verdict makes --regex refuse by name (the file and the cause on stderr, exit 1); no hit is reported",
+                          "grep: the per-file match budget stopped the scan (a pattern the screen admits, on a file it could not finish) — the verb refuses the answer" );
+            }
+            else
+            {
+                DISCLOSE( Diagnostics::answerRefused, "the verdict makes --regex refuse by name (the file and the cause on stderr, exit 1); no hit is reported",
+                          "grep: the regex engine abandoned a match (catastrophic backtracking?) — the verb refuses the answer" );
+            }
         }
         scanned = text.size();   // the literal branch's cursor is not shared with this one; keep it honest
-        return { scan.verdict == RegexVerdict::Exhausted, scan.skippedLineCount };
+        return { scan.verdict == RegexVerdict::Exhausted, scan.skippedLineCount, scan.budgeted };
     }
     else
     {
@@ -1344,6 +1356,11 @@ struct GrepCollection
     // and the CLI refuses it by name rather than print a count the engine never finished (literal scans: 0).
     std::uint32_t           regexAbandonedFiles     = 0;
     std::uint32_t           firstRegexAbandonedFile = 0;
+    // Phase 2: of the abandoned files above, this many were stopped by the GUARD's per-file MATCH BUDGET rather than
+    // by the engine giving up (src/regexguard.h, kRegexFileMatchBudget). The refusal quotes kRegexBudgetReason rather
+    // than kRegexAbandonedReason when this is nonzero, so the reader is pointed at the guard, not at libc++.
+    std::uint32_t           regexBudgetedFiles      = 0;
+    std::uint32_t           firstRegexBudgetedFile  = 0;
     // A --regex scan's lines the engine was never handed because they were longer than a scan thread's stack can take
     // (GrepScanVerdict). A match there is neither found nor ruled out, so nonzero makes hits= a floor; it does NOT set
     // `degraded` — every other line was read, and the answer is printed with the count beside it rather than refused.
@@ -1428,6 +1445,7 @@ inline GrepCollection grepCollect( const IngestResult& ing, const std::string& p
     // ── pass 1: parallel scan, one worker per hardware thread, one file at a time ──────────────────────
     std::vector<std::vector<GrepMatchSite>> perFileSites( fileCount );   // slot f written by exactly one worker
     std::vector<char>                       perFileAbandoned( regex ? fileCount : 0, 0 );   // slot f: the engine abandoned a match in f
+    std::vector<char>                       perFileBudgeted( regex ? fileCount : 0, 0 );    // slot f: the per-file MATCH BUDGET stopped the scan of f (Phase 2)
     std::vector<std::uint32_t>              perFileSkipped( regex ? fileCount : 0, 0 );     // slot f: lines too long for the engine in f
     std::atomic<std::size_t>                engineLineBytesMax { 0 };    // every worker stores the SAME value: one settled stack, one pattern
     std::atomic<std::uint32_t>              nextFileId { 0 };
@@ -1461,10 +1479,14 @@ inline GrepCollection grepCollect( const IngestResult& ing, const std::string& p
                 {
                     continue;
                 }
-                const auto [ isAbandoned, linesSkipped ] = grepScanText( text, pat, regex ? &reLocal.regex : nullptr, budgetCount, perFileSites[f], linePolicy );
+                const auto [ isAbandoned, linesSkipped, isBudgeted ] = grepScanText( text, pat, regex ? &reLocal.regex : nullptr, budgetCount, perFileSites[f], linePolicy );
                 if( isAbandoned )
                 {
                     perFileAbandoned[f] = 1;
+                }
+                if( isBudgeted )
+                {
+                    perFileBudgeted[f] = 1;
                 }
                 if( linesSkipped != 0 )
                 {
@@ -1561,6 +1583,7 @@ inline GrepCollection grepCollect( const IngestResult& ing, const std::string& p
     // `std::move( raw )` would read a moved-from vector and always report "not capped"
     const bool isBudgetReached = raw.size() >= budgetCount;
     const auto [ regexAbandonedFiles, firstRegexAbandonedFile ] = countAbandonedFiles( perFileAbandoned );
+    const auto [ regexBudgetedFiles, firstRegexBudgetedFile ]   = countAbandonedFiles( perFileBudgeted );   // Phase 2: same shape, its own counter
     std::uint64_t regexLinesSkipped = 0;
     for( const std::uint32_t skipped : perFileSkipped )
     {
@@ -1568,6 +1591,7 @@ inline GrepCollection grepCollect( const IngestResult& ing, const std::string& p
     }
     return { std::move( raw ), isBudgetReached, unreadableCount.load( std::memory_order_relaxed ),
              workerDegraded.load( std::memory_order_relaxed ) || regexAbandonedFiles != 0, regexAbandonedFiles, firstRegexAbandonedFile,
+             regexBudgetedFiles, firstRegexBudgetedFile,
              regexLinesSkipped, engineLineBytesMax.load( std::memory_order_relaxed ), regex ? scanStackBytes : 0 };
 }
 
@@ -1620,6 +1644,8 @@ struct GrepAuxCollection
     bool                    degraded             = false;   // regex failed to COMPILE — nothing was scanned, mirrors GrepCollection's construction-failure case
     std::uint32_t           regexAbandonedFiles  = 0;       // the engine abandoned a match in this many unindexed files (see GrepCollection)
     std::string             firstRegexAbandonedPath;        // the first of them, in the candidate list's own path order
+    std::uint32_t           regexBudgetedFiles   = 0;       // Phase 2: of those, this many hit the per-file MATCH BUDGET (see GrepCollection)
+    std::string             firstRegexBudgetedPath;         // the first of them, in the candidate list's own path order
     std::uint64_t           regexLinesSkipped    = 0;       // lines too long for the engine in unindexed files (see GrepCollection)
     std::size_t             regexLineBytesMax    = 0;       // the engine line bound of this scan's one thread (see GrepCollection)
     std::size_t             regexStackBytes      = 0;       // that thread's stack (see GrepCollection); 0 for a literal scan
@@ -1640,6 +1666,14 @@ struct GrepAuxCollection
         if( regexAbandonedFiles++ == 0 )
         {
             firstRegexAbandonedPath = path;
+        }
+    }
+
+    void noteRegexBudgeted( const std::string& path )   // Phase 2: the guard's per-file match budget, not the engine
+    {
+        if( regexBudgetedFiles++ == 0 )
+        {
+            firstRegexBudgetedPath = path;
         }
     }
 };
@@ -1672,10 +1706,14 @@ inline void scanUnsupportedFiles( const CrawlSkips& skips, const std::string& pa
         ++out.filesScanned;
 
         sites.clear();
-        const auto [ isAbandoned, linesSkipped ] = grepScanText( text, pat, re, kGrepCollectionBudget, sites, linePolicy );
+        const auto [ isAbandoned, linesSkipped, isBudgeted ] = grepScanText( text, pat, re, kGrepCollectionBudget, sites, linePolicy );
         if( isAbandoned )
         {
             out.noteRegexAbandoned( row.path );
+        }
+        if( isBudgeted )
+        {
+            out.noteRegexBudgeted( row.path );
         }
         out.regexLinesSkipped += linesSkipped;
         if( sites.empty() )

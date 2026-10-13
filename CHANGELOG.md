@@ -36,7 +36,30 @@ There is no record content or extraction-version change; the order of a file's b
 differs, and no reader depends on it (a cache written by the previous release gives identical
 answers). The Python import gate checks fresh/warm output and, when `RIPWIRE_BASE_BIN` is supplied,
 acceptance of a pristine-main cache without rewriting it.
+### Security — the pattern screen refuses overlapping alternation, and a per-file match budget discloses the scan it stops
 
+A pattern whose group carries a top-level `|` under an unbounded outer quantifier could backtrack catastrophically
+on a subject it fails to match. The screen that guards every user-authored pattern surface (`--regex`,
+`--graph-query file()`, `--arch` path-rules, `#match?`/`#not-match?`) already refused every unbounded quantifier over
+a group containing a quantifier, but it passed a group whose branches merely *overlap* — the classic `(a|aa)+b$`, and
+the `(get|getResponse)+` shape that reads as innocent. It now refuses those too, and the refusal states what the
+screen actually knows: it **cannot PROVE the branches disjoint**. It does not claim the branches overlap, and it does
+not teach a factoring an already-disjoint alternation could not perform.
+
+A second cause reaches the same refusal: the guard's own **per-file match budget** (`kRegexFileMatchBudget`, a
+deterministic count of engine line-match attempts per file — not a clock, so the answer cannot vary by machine). A
+file the guard cannot scan within that budget stops the verb with exit 1 and no `hits=`, and the message quotes the
+guard's reason rather than sending a reader to an engine complexity budget libstdc++ does not have.
+
+Honest patterns are untouched: the 17-pattern golden set is byte-identical on stdout, stderr and exit code, and the
+corpus sweep over 99,845 literals newly refuses 33 and newly admits 0.
+
+**The budget bounds a file's aggregate cost; a single pathological match remains unbounded on libstdc++, tracked by
+`regex-screen-multiquantifier`.** The new rule targets a group with a top-level `|`; a pattern carrying several
+quantified atoms and no such group — `a*a*a*a*a*b`, `^(a)*(a)*(a)*(a)*(a)*$` — is admitted, and on libstdc++ a
+subject that holds its required literal and then a long run is unbounded work the budget cannot see: one `std::regex`
+call is atomic to its caller, and the cap is checked before the engine is handed a line. libc++ returns only because
+its engine throws `error_complexity`. The follow-on spec owns it; this change does not claim it closed.
 ## [0.6.7] — 2026-10-11
 
 ### Fixed — `--impact`: a selector matching several definitions keeps the `via="name"` hedge in its per-file rollup

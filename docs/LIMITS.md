@@ -15,12 +15,21 @@ document. To reach a declaration, search its file for the name (`grep -n <name> 
 `ripwire . --grep=<name>`). A file that declares the same name, value and note more than once shows
 it once, marked `×N`.
 
+**Known residual — the match budget bounds a file, not a match.** `kRegexFileMatchBudget` (below) is a
+deterministic count of engine line-match attempts per file, checked BEFORE the engine is handed a line, so it
+bounds a file's AGGREGATE cost: **the budget bounds a file's aggregate cost; a single pathological match
+remains unbounded on libstdc++, tracked by `regex-screen-multiquantifier`.** One `std::regex` call is atomic to
+its caller, so no caller-side counter can see the work inside it. libc++ returns only because its ENGINE throws
+`error_complexity`; libstdc++ has no such budget, and the multi-quantifier family (`a*a*a*a*a*b`,
+`^(a)*(a)*(a)*(a)*(a)*$`) is admitted by the screen by construction. Named and reachable, not bounded — the
+follow-on spec owns it.
+
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 253 | 98 | 149 | **104** |
+| 255 | 98 | 149 | **106** |
 
 Plus 7 ranking and apportionment parameters, in their own table below: they are not caps, they
-are not counted as caps, and 253 + 7 is the 260 constants this generator parses out of `src/`.
+are not counted as caps, and 255 + 7 is the 262 constants this generator parses out of `src/`.
 
 ## INDEXING, OUTPUT or BOUNDARY — which half of the answer a cap bounds
 
@@ -38,8 +47,8 @@ None of them truncates anything, so none can be judged by `shown=`/`total=` and 
 a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.
 The distinction was named in review on #108 and the rows below now carry it.
 
-The `class` column below carries that answer where it is known. **139 of 253 caps are classified
-(49 INDEXING, 46 OUTPUT, 44 BOUNDARY); the remaining 114 render `—`, which means NOT YET
+The `class` column below carries that answer where it is known. **139 of 255 caps are classified
+(49 INDEXING, 46 OUTPUT, 44 BOUNDARY); the remaining 116 render `—`, which means NOT YET
 CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with
 a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
@@ -89,7 +98,7 @@ refuse to write, so the column cannot be satisfied by pointing at nothing.
 
 ## Caps, by file
 
-One table for each of the 98 files that declare a cap — the 253 caps counted above, and no parameter.
+One table for each of the 98 files that declare a cap — the 255 caps counted above, and no parameter.
 
 ### `src/abicheck.h`
 
@@ -835,6 +844,8 @@ Discloses: **none**
 
 | constant | value | class | note |
 | --- | --- | --- | --- |
+| `kRegexFaultBudget` | `4` | — | — |
+| `kRegexFileMatchBudget` | `1000000` | — | per file; >>10x this tree's own gate corpus (evidence/README.md) |
 | `kRegexMaxGroupDepth` | `64` | BOUNDARY | deeper group nesting is REFUSED by name — the same stack bound, for nesting |
 | `kRegexMaxPatternBytes` | `2048` | BOUNDARY | a longer pattern is REFUSED by name, never truncated — the compile-recursion stack bound |
 

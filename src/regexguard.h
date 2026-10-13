@@ -26,7 +26,9 @@
 //       library: a pattern one engine abandons and the other backtracks on forever gets one answer, not two.
 //   GuardedRegex::search / forEachMatch → RegexVerdict { Miss, Hit, Exhausted, Skipped }. Exhausted is a
 //       regex_error thrown DURING the match (libc++'s error_complexity / error_stack): the screen is a static
-//       approximation, and overlapping alternation — (a|a)+z — passes it. It is never Miss. METHODOLOGY §9: an
+//       approximation, and what it still cannot see is a CRAFTED SUBJECT under a pattern it admits — since
+//       M2-c the overlapping alternation it used to name here, (a|a)+z, is refused by the screen instead. It
+//       is never Miss. METHODOLOGY §9: an
 //       abandoned match is "unknown", and a caller that folds it into "no hit" reports a zero it did not
 //       measure. Every entry point refuses on it by name, quoting kRegexAbandonedReason. Skipped is a subject
 //       NEVER HANDED to the engine because it exceeds this thread's measured-safe bound (maxEngineSubjectBytes)
@@ -165,14 +167,28 @@ inline std::optional<std::string> nonPortableRegexEscape( const std::string& pat
 // '(a{3})+b'. A screen that must return ONE verdict on two different backtrackers cannot make that call.
 //
 // WHAT IS DELIBERATELY NOT CAUGHT, so the guard does not quietly eat working patterns: a group with no
-// quantifier inside passes however it is quantified, so (abc)+, (a|b)+ and (a)+b pass; a BOUNDED outer
+// quantifier inside passes however it is quantified, so (abc)+ and (a)+b pass; a BOUNDED outer
 // quantifier passes whatever the group contains, which is what keeps the workaround this very message
 // suggests — '(\s*\w+){1,20}' — legal; an UNQUANTIFIED group passes whatever it contains, so (a+)b, (a?)b
 // and (a+)(b)+ pass; '+' inside a character class or behind a backslash is a literal, so [a+]+ and (\+)+
 // pass; and the '?' that opens '(?:', '(?=' or '(?!' is a group MODIFIER, not a quantifier, so (?:abc)+
-// passes while (?:a+)+b is still refused. The known GAP is overlapping alternation — (a|a)+b is a real
-// bomb whose branches only overlap semantically — which is why GuardedRegex's match-time catch below is kept
-// as belt-and-braces rather than removed. Every one of these cases is an arm of test/regexbombcheck.sh.
+// passes while (?:a+)+b is still refused.
+//
+// THE SECOND ARM — overlapping alternation, closed 2026-10-12 (M2-c). A group whose branches carried no
+// quantifier at all used to pass however it was quantified, which made `(a|a)+b` a real bomb the screen
+// could not see; that was the audit's live PoC `^(a|aa)+b$`, and this file used to name it as the known
+// GAP. The screen cannot read semantics, so it now refuses a group's own top-level '|' under an unbounded
+// outer UNLESS it can prove the branches disjoint, and the only proof cheap enough to be worth trusting is
+// CHARACTER SETS: every branch must consume exactly ONE character, and all those characters must be
+// pairwise disjoint. So `(a|b)+` — the gate's own safeCase control — still passes, and so does
+// `(\d|[a-z])+`, while `(a|a)+b`, `^(a|aa)+b$`, `(x|xy)+c$` and `(\w|\d)+$` are refused. The price is a
+// KNOWN FALSE-POSITIVE CLASS, stated here rather than discovered later: a MULTI-CHARACTER alternation such
+// as `(cat|dog)+` or `(get|getResponse)+` is refused although it cannot backtrack, because `ab|cd` and
+// `cat|dog` are the same SHAPE as the refused `^(ab|cd)+e$`, and a screen that must return ONE verdict on
+// two shapes cannot tell them apart. Refusal is a safe failure, a hang is not — and the refusal says what it
+// actually knows ("cannot PROVE are disjoint"), NOT that the branches overlap, because for (cat|dog)+ they do
+// not; the only workaround it names is bounding the OUTER quantifier, which works for the whole class (PM-1,
+// 2026-10-12). Every one of these cases is an arm of test/regexbombcheck.sh.
 //
 // Scope: EVERY user-authored pattern, through compileGuardedRegex below — --regex, --graph-query file(), the
 // --arch path-rules and the #match?/#not-match? predicates of --match and --lint-rules. This paragraph used to
@@ -232,10 +248,42 @@ inline RegexQuantifier regexQuantifierAt( const std::string& pat, std::size_t at
 
 // '(?:' / '(?=' / '(?!' — a '?' immediately after '(' opens a NON-CAPTURING or lookaround group. It is a
 // group MODIFIER, not a quantifier, and reading it as one (which M2-b's widened flag otherwise would)
-// refuses every '(?:abc)+' ever written. Returns how many characters the scan must step over.
+// refuses every '(?:abc)+' ever written. Returns how many characters after the '(' the modifier occupies,
+// so the caller's `i += length` lands the scan on the group's BODY.
+//
+// M2-c fixes two things here that the quantifier scan alone could not see, and neither changes its verdict.
+// (1) The count is now the WHOLE modifier: '(?:' is 2, not 1, because the body of '(?:a|b)+' starts at the
+// 'a' and not at the ':' — the old count left the ':' to be re-scanned as an ordinary character, which was
+// harmless until the alternation arm started reading a group's body from this offset, at which point every
+// branch of a non-capturing group began with a stray ':' and a disjoint alternation was refused.
+// (2) The two '<' forms are now handled: '(?<name>' is a NAMED group whose name is part of the modifier,
+// and '(?<=' / '(?<!' are lookbehind. Both would otherwise be read as body text.
 inline std::size_t regexGroupModifierLength( const std::string& pat, std::size_t openAt )
 {
-    return ( openAt + 1 < pat.size() && pat[ openAt + 1 ] == '?' ) ? 1 : 0;
+    if( openAt + 1 >= pat.size() || pat[ openAt + 1 ] != '?' )
+    {
+        return 0;   // '(' … — an ordinary capturing group
+    }
+    if( openAt + 2 >= pat.size() )
+    {
+        return 1;   // a bare '(?' — malformed, and the compile probe below owns that error
+    }
+    if( pat[ openAt + 2 ] != '<' )
+    {
+        return 2;   // '(?:' / '(?=' / '(?!'
+    }
+    if( openAt + 3 < pat.size() && ( pat[ openAt + 3 ] == '=' || pat[ openAt + 3 ] == '!' ) )
+    {
+        return 3;   // '(?<=' / '(?<!' — lookbehind, no name
+    }
+    for( std::size_t cursor = openAt + 3; cursor < pat.size(); ++cursor )
+    {
+        if( pat[ cursor ] == '>' )
+        {
+            return cursor - openAt;   // '(?<name>' — everything through the '>' is the modifier
+        }
+    }
+    return 2;       // an unterminated name: the compile probe below owns that error
 }
 
 // The one refusal this screen emits, kept out of the scan loop so the loop reads as the small state
@@ -254,14 +302,364 @@ inline std::string catastrophicRegexMessage( char outerQuant )
              "make the OUTER bounded with an explicit interval ('(\\s*\\w+){1,20}')";
 }
 
+// ── the ALTERNATION arm's character sets (M2-c, 2026-10-12) ─────────────────────────────────────────────
+//
+// To refuse `(a|a)+` the screen has to see that two branches can match the SAME text, and it cannot read
+// semantics. So it compares CHARACTER SETS, and only for a branch it can prove consumes exactly one
+// character. The sets are dense over ASCII 0..127 with one flag for "reaches past ASCII", which is what
+// makes the complements ('\D', '\W', '\S', '[^…]') answerable without a Unicode table: a byte outside ASCII
+// is matched by every complement and by '.', and by no shorthand and no literal. A branch the parser will
+// not commit to gets NO set, and the caller refuses — the conservative direction, and the reason '[]',
+// '[[:alpha:]]', '\p{L}', '\b' and a backreference are refusals rather than guesses.
+inline constexpr unsigned kRegexCharSetAscii = 128;   // dense range: 0..63 in asciiLow, 64..127 in asciiHigh
+
+struct RegexCharSet
+{
+    std::uint64_t asciiLow        = 0;
+    std::uint64_t asciiHigh       = 0;
+    bool          matchesNonAscii = false;
+
+    void add( unsigned char c ) { ( c < 64 ? asciiLow : asciiHigh ) |= std::uint64_t( 1 ) << ( c & 63 ); }
+    void remove( unsigned char c ) { ( c < 64 ? asciiLow : asciiHigh ) &= ~( std::uint64_t( 1 ) << ( c & 63 ) ); }
+    bool has( unsigned char c ) const { return ( ( c < 64 ? asciiLow : asciiHigh ) >> ( c & 63 ) ) & 1; }
+};
+
+inline RegexCharSet regexCharSetOfDigit()
+{
+    RegexCharSet set;
+    for( unsigned char c = '0'; c <= '9'; ++c ) { set.add( c ); }
+    return set;
+}
+
+inline RegexCharSet regexCharSetOfWord()
+{
+    RegexCharSet set = regexCharSetOfDigit();
+    for( unsigned char c = 'A'; c <= 'Z'; ++c ) { set.add( c ); }
+    for( unsigned char c = 'a'; c <= 'z'; ++c ) { set.add( c ); }
+    set.add( '_' );
+    return set;
+}
+
+inline RegexCharSet regexCharSetOfSpace()
+{
+    RegexCharSet        set;
+    const unsigned char bytes[] = { ' ', '\t', '\n', '\r', '\f', '\v' };
+    for( unsigned char c : bytes ) { set.add( c ); }
+    return set;
+}
+
+inline RegexCharSet regexCharSetOfAny()   // '.' — ECMAScript's dot without dotAll: every byte but a line terminator
+{
+    RegexCharSet set;
+    set.asciiLow        = ~std::uint64_t( 0 );
+    set.asciiHigh       = ~std::uint64_t( 0 );
+    set.matchesNonAscii = true;
+    set.remove( '\n' );
+    set.remove( '\r' );
+    return set;
+}
+
+inline RegexCharSet regexCharSetComplement( const RegexCharSet& base )
+{
+    RegexCharSet set;
+    set.asciiLow        = ~base.asciiLow;
+    set.asciiHigh       = ~base.asciiHigh;
+    set.matchesNonAscii = true;   // the complement of an ASCII-only set always reaches past ASCII
+    return set;
+}
+
+inline bool regexCharSetsIntersect( const RegexCharSet& a, const RegexCharSet& b )
+{
+    if( ( a.asciiLow & b.asciiLow ) != 0 || ( a.asciiHigh & b.asciiHigh ) != 0 )
+    {
+        return true;
+    }
+    return a.matchesNonAscii && b.matchesNonAscii;
+}
+
+// '\d' '\D' '\w' '\W' '\s' '\S' — the one-character classes ECMAScript spells with a backslash.
+inline bool regexCharSetOfShorthand( char escaped, RegexCharSet& out )
+{
+    switch( escaped )
+    {
+        case 'd': out = regexCharSetOfDigit();                           return true;
+        case 'D': out = regexCharSetComplement( regexCharSetOfDigit() );  return true;
+        case 'w': out = regexCharSetOfWord();                            return true;
+        case 'W': out = regexCharSetComplement( regexCharSetOfWord() );   return true;
+        case 's': out = regexCharSetOfSpace();                           return true;
+        case 'S': out = regexCharSetComplement( regexCharSetOfSpace() );  return true;
+        default:  return false;
+    }
+}
+
+// the set of ONE escaped character, when it consumes exactly one. false = the parser will not commit: a
+// zero-width assertion ('\b', '\B'), a backreference ('\1'…'\9', '\k'), a Unicode property, or a
+// decodable-but-undecoded '\x' / '\u' / '\c' escape. Every one of those is a REFUSAL at the call site.
+inline bool regexCharSetOfEscape( char escaped, RegexCharSet& out )
+{
+    if( regexCharSetOfShorthand( escaped, out ) )
+    {
+        return true;
+    }
+    switch( escaped )
+    {
+        case 'b': case 'B': case 'k': case 'p': case 'P': case 'x': case 'u': case 'c':
+            return false;
+        default:
+            break;
+    }
+    if( escaped >= '1' && escaped <= '9' )
+    {
+        return false;
+    }
+    out = {};
+    switch( escaped )
+    {
+        case 'n': out.add( '\n' ); break;
+        case 'r': out.add( '\r' ); break;
+        case 't': out.add( '\t' ); break;
+        case 'f': out.add( '\f' ); break;
+        case 'v': out.add( '\v' ); break;
+        case '0': out.add( '\0' ); break;
+        default:  out.add( static_cast<unsigned char>( escaped ) ); break;   // '\.', '\+', '\\', '\/' … a literal
+    }
+    return true;
+}
+
+// true when the set is EXACTLY one ASCII character — what a range endpoint must be. '\d' is ten characters
+// and '.' is a hundred and twenty-six, so neither may be an endpoint.
+inline bool regexCharSetAsOneAsciiByte( const RegexCharSet& set, unsigned char& byte )
+{
+    if( set.matchesNonAscii )
+    {
+        return false;
+    }
+    int found = -1;
+    for( unsigned char c = 0; c < kRegexCharSetAscii; ++c )
+    {
+        if( set.has( c ) )
+        {
+            if( found >= 0 )
+            {
+                return false;
+            }
+            found = c;
+        }
+    }
+    if( found < 0 )
+    {
+        return false;
+    }
+    byte = static_cast<unsigned char>( found );
+    return true;
+}
+
+// the set of ONE character class, '[' … ']'. `next` is left just past the closing ']'. false = the parser
+// will not commit: an empty class, an unterminated one, a nested '[', or a range whose endpoint is not a
+// single character ('[a-\d]', '[\w-z]') — all refusals rather than guesses.
+inline bool regexCharSetOfClass( const std::string& pat, std::size_t openAt, std::size_t end, RegexCharSet& out, std::size_t& next )
+{
+    out = {};
+    std::size_t cursor  = openAt + 1;
+    const bool  negated = cursor < end && pat[ cursor ] == '^';
+    if( negated )
+    {
+        ++cursor;
+    }
+
+    bool anyMember = false;
+    while( cursor < end && pat[ cursor ] != ']' )
+    {
+        RegexCharSet member;
+        std::size_t  memberEnd = cursor;
+        if( pat[ cursor ] == '\\' )
+        {
+            if( cursor + 2 > end || !regexCharSetOfEscape( pat[ cursor + 1 ], member ) )
+            {
+                return false;
+            }
+            memberEnd = cursor + 2;
+        }
+        else
+        {
+            if( pat[ cursor ] == '[' )
+            {
+                return false;   // a nested '[' is not a member of this screen's class model
+            }
+            member = {};
+            member.add( static_cast<unsigned char>( pat[ cursor ] ) );
+            memberEnd = cursor + 1;
+        }
+
+        // a RANGE is '-' between two single characters; anything else is refused
+        if( memberEnd < end && pat[ memberEnd ] == '-' && memberEnd + 1 < end && pat[ memberEnd + 1 ] != ']' )
+        {
+            RegexCharSet upper;
+            std::size_t  upperEnd = memberEnd + 1;
+            if( pat[ upperEnd ] == '\\' )
+            {
+                if( upperEnd + 2 > end || !regexCharSetOfEscape( pat[ upperEnd + 1 ], upper ) )
+                {
+                    return false;
+                }
+                upperEnd += 2;
+            }
+            else
+            {
+                upper = {};
+                upper.add( static_cast<unsigned char>( pat[ upperEnd ] ) );
+                ++upperEnd;
+            }
+            unsigned char lowerByte = 0, upperByte = 0;
+            if( !regexCharSetAsOneAsciiByte( member, lowerByte ) || !regexCharSetAsOneAsciiByte( upper, upperByte ) || lowerByte > upperByte )
+            {
+                return false;
+            }
+            for( unsigned char c = lowerByte; c <= upperByte; ++c )
+            {
+                out.add( c );
+            }
+            cursor    = upperEnd;
+            anyMember = true;
+            continue;
+        }
+
+        for( unsigned char c = 0; c < kRegexCharSetAscii; ++c )
+        {
+            if( member.has( c ) )
+            {
+                out.add( c );
+            }
+        }
+        out.matchesNonAscii = out.matchesNonAscii || member.matchesNonAscii;
+        cursor              = memberEnd;
+        anyMember           = true;
+    }
+
+    if( cursor >= end || pat[ cursor ] != ']' || !anyMember )
+    {
+        return false;
+    }
+    next = cursor + 1;
+    if( negated )
+    {
+        out = regexCharSetComplement( out );
+    }
+    return true;
+}
+
+// The character set of a branch that consumes EXACTLY ONE character, or false when the branch is anything
+// else — two characters, a quantifier, an anchor, an empty branch, a backreference. false is not an error:
+// it is the caller's signal that disjointness cannot be proven, so the caller refuses.
+inline bool regexCharSetOfSingleCharBranch( const std::string& pat, std::size_t begin, std::size_t end, RegexCharSet& out )
+{
+    if( begin >= end )
+    {
+        return false;   // an empty branch matches the EMPTY STRING — exactly the ambiguity this arm exists for
+    }
+    const char c = pat[ begin ];
+    if( c == '\\' )
+    {
+        return begin + 2 == end && regexCharSetOfEscape( pat[ begin + 1 ], out );
+    }
+    if( c == '[' )
+    {
+        std::size_t next = begin;
+        return regexCharSetOfClass( pat, begin, end, out, next ) && next == end;
+    }
+    if( c == '.' )
+    {
+        if( begin + 1 != end )
+        {
+            return false;
+        }
+        out = regexCharSetOfAny();
+        return true;
+    }
+    // a one-character atom cannot be an anchor, a group delimiter or a quantifier
+    if( c == '^' || c == '$' || c == '|' || c == '(' || c == ')' || c == '*' || c == '+' || c == '?' || c == '{' || c == '}' || c == ']' )
+    {
+        return false;
+    }
+    if( begin + 1 != end )
+    {
+        return false;
+    }
+    out = {};
+    out.add( static_cast<unsigned char>( c ) );
+    return true;
+}
+
+// true when the group's own top-level alternation can match the same text two ways, as far as a screen that
+// compares character sets can tell. `pipes` holds the group's own '|' offsets, ascending. The FIRST branch
+// that is not a provably single-character set ends the question: disjointness is unproven, so refuse.
+inline bool regexAlternationOverlaps( const std::string& pat, std::size_t bodyBegin, std::size_t closeAt, const std::vector<std::size_t>& pipes )
+{
+    std::vector<RegexCharSet> branches;
+    branches.reserve( pipes.size() + 1 );
+
+    std::size_t begin = bodyBegin;
+    for( std::size_t k = 0; k <= pipes.size(); ++k )
+    {
+        const std::size_t end = ( k < pipes.size() ) ? pipes[ k ] : closeAt;
+        RegexCharSet      set;
+        if( !regexCharSetOfSingleCharBranch( pat, begin, end, set ) )
+        {
+            return true;
+        }
+        branches.push_back( set );
+        begin = end + 1;
+    }
+
+    for( std::size_t a = 0; a < branches.size(); ++a )
+    {
+        for( std::size_t b = a + 1; b < branches.size(); ++b )
+        {
+            if( regexCharSetsIntersect( branches[ a ], branches[ b ] ) )
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// The alternation arm's refusal, in the same voice as catastrophicRegexMessage above: name the construct, say why
+// the paths multiply, and leave the reader a workaround. Every gate that greps a refusal for 'backtrack' and for
+// a workaround ('collapse' or 'bounded') reads this sentence too.
+//
+// PM-1 (2026-10-12, PM-directed). The wording used to ASSERT the branches "can match the same text". For the
+// false-positive class the header above names — (cat|dog)+, (get|getResponse)+, the `X|[^X]…` family — that claim
+// is simply false, and the workaround it taught ("factor the branches so no two of them can match the same text")
+// cannot be applied to branches that are ALREADY disjoint. A screen that refuses a shape it cannot read must say
+// what it actually knows: it cannot PROVE the branches disjoint, and a branch of more than one character is
+// refused because its shape is indistinguishable, without matching it, from an overlapping one. The actionable
+// workaround — bounding the OUTER quantifier — works for every pattern in this class, so it carries alone.
+inline std::string catastrophicRegexAlternationMessage( char outerQuant )
+{
+    return   std::string( "catastrophic backtracking: the unbounded quantifier '" ) + outerQuant + "' is applied to an alternation whose "
+             "branches the structural screen cannot PROVE are disjoint. A branch carries no quantifier of its own, so the "
+             "nested-repetition refusal cannot see this one, and a branch of more than one character is refused because its SHAPE is "
+             "indistinguishable, without matching it, from one that overlaps another: every way of splitting the input between the "
+             "branches and the outer repetition is then a separate path, so matching a non-matching line costs time exponential in its "
+             "length. Workaround: make the OUTER bounded with an explicit interval ('(get|getResponse){1,5}')";
+}
+
 inline std::optional<std::string> catastrophicRegexConstruct( const std::string& pat )
 {
-    // one flag per OPEN group: does anything inside it, at any depth, carry a quantifier — of ANY kind?
-    // (M2-b: this used to track only UNBOUNDED inner repetition, which let the libstdc++-hanging (a?)+ and
-    // (a{1,3})+ through. Unbounded is a subset of "any", so widening the flag is the whole behaviour change
-    // — the refusal condition below still requires the OUTER quantifier to be unbounded.)
-    std::vector<char> hasQuantifierInsideGroup;
-    bool              isInsideClass = false;
+    // One frame per OPEN group. M2-c replaced the bare flag vector with a frame because the alternation arm
+    // needs two more things about a group: where its own BODY starts (a group modifier is not body), and
+    // where its OWN top-level '|' characters are — a '|' inside a nested group belongs to that group, not
+    // to this one, and treating it as this group's would split a branch in the wrong place.
+    struct GroupFrame
+    {
+        bool                     hasQuantifierInside = false;
+        std::size_t              bodyBegin           = 0;
+        std::vector<std::size_t> topLevelPipes;
+    };
+
+    std::vector<GroupFrame> frames;
+    bool                    isInsideClass = false;
 
     for( std::size_t i = 0; i < pat.size(); ++i )
     {
@@ -280,28 +678,44 @@ inline std::optional<std::string> catastrophicRegexConstruct( const std::string&
         if( c == '[' )      { isInsideClass = true; continue; }
 
         // group open / close — the close is where the whole verdict is made
-        if( c == '(' ) { hasQuantifierInsideGroup.push_back( 0 ); i += regexGroupModifierLength( pat, i ); continue; }
+        if( c == '(' )
+        {
+            const std::size_t modifier = regexGroupModifierLength( pat, i );
+            frames.push_back( { false, i + 1 + modifier, {} } );
+            i += modifier;
+            continue;
+        }
         if( c == ')' )
         {
-            if( hasQuantifierInsideGroup.empty() )
+            if( frames.empty() )
             {
                 continue; // unbalanced: the compile probe below owns that error
             }
 
-            const bool isRepeatingInside = hasQuantifierInsideGroup.back() != 0;
-            hasQuantifierInsideGroup.pop_back();
+            const GroupFrame frame = std::move( frames.back() );
+            frames.pop_back();
+
             const RegexQuantifier quant = regexQuantifierAt( pat, i + 1 );
 
-            if( quant.isPresent && quant.isUnbounded && isRepeatingInside )
+            if( quant.isPresent && quant.isUnbounded && frame.hasQuantifierInside )
             {
                 return catastrophicRegexMessage( pat[ i + 1 ] );
+            }
+            // M2-c: the arm above cannot see an alternation whose branches carry no quantifier, so the
+            // second arm judges this group's own top-level branches. It runs ONLY when the first arm has
+            // not already refused, so every pattern refused before this change keeps the message it had —
+            // regexguardcheck.sh asserts that wording at every entry point.
+            if( quant.isPresent && quant.isUnbounded && !frame.topLevelPipes.empty()
+                && regexAlternationOverlaps( pat, frame.bodyBegin, i, frame.topLevelPipes ) )
+            {
+                return catastrophicRegexAlternationMessage( pat[ i + 1 ] );
             }
 
             // the group is now an ATOM of its parent: a quantifier anywhere inside it — or ON it — is a
             // quantifier inside the parent too, which is what makes ((a+))+, ((a)+)+ and ((a)?)+ visible
-            if( !hasQuantifierInsideGroup.empty() && ( isRepeatingInside || quant.isPresent ) )
+            if( !frames.empty() && ( frame.hasQuantifierInside || quant.isPresent ) )
             {
-                hasQuantifierInsideGroup.back() = 1;
+                frames.back().hasQuantifierInside = true;
             }
             if( quant.isPresent )
             {
@@ -310,11 +724,21 @@ inline std::optional<std::string> catastrophicRegexConstruct( const std::string&
             continue;
         }
 
+        // this group's own top-level '|' — the separator the alternation arm splits its branches on
+        if( c == '|' )
+        {
+            if( !frames.empty() )
+            {
+                frames.back().topLevelPipes.push_back( i );
+            }
+            continue;
+        }
+
         // a plain quantifier: it marks the innermost enclosing group, if any (top-level repetition is fine)
         const RegexQuantifier quant = regexQuantifierAt( pat, i );
-        if( quant.isPresent && !hasQuantifierInsideGroup.empty() )
+        if( quant.isPresent && !frames.empty() )
         {
-            hasQuantifierInsideGroup.back() = 1;
+            frames.back().hasQuantifierInside = true;
         }
         if( quant.isPresent )
         {
@@ -417,9 +841,8 @@ enum class RegexVerdict : std::uint8_t
 // words whichever verb it asked. Platform-independent on purpose: the engine's own what() differs per standard
 // library, and this refusal must read the same on every one that can produce it.
 inline constexpr std::string_view kRegexAbandonedReason =
-    "the regex engine abandoned the match (std::regex gave up part-way through it: the backtracking the structural "
-    "screen cannot see, such as overlapping alternation like (a|a)+z where two branches match the same text, or "
-    "its stack or memory limit)";
+    "the regex engine abandoned the match (std::regex gave up part-way through it: the backtracking a structural "
+    "screen cannot see — a crafted subject under a pattern the screen admits — or its stack or memory limit)";
 
 // The counterpart for RegexVerdict::Skipped — the sentence every entry point quotes when a subject was never
 // handed to the engine at all (too long for this thread's measured-safe bound, src/infra/stackthreads.h and
@@ -428,6 +851,14 @@ inline constexpr std::string_view kRegexAbandonedReason =
 inline constexpr std::string_view kRegexOversizeReason =
     "the subject was too long for the regex engine to attempt safely on this thread (longer than the measured-safe "
     "bound for this pattern's recursion cost and stack size)";
+
+// The counterpart for the MATCH BUDGET (Phase 2) — the guard's own bound, not the engine's. Distinct from
+// kRegexAbandonedReason on purpose: "the engine gave up" points a reader at the standard library's complexity
+// budget, which only libc++ has; this one points at the GUARD, which is what protects libstdc++ (no budget of its
+// own — it backtracks without end). Naming the wrong one would send a reader to the wrong fix.
+inline constexpr std::string_view kRegexBudgetReason =
+    "the scan hit this file's match budget (the guard stopped scanning it after the per-file bound on engine "
+    "line-match attempts was exceeded — the backstop for an engine with no complexity budget of its own)";
 
 // ── THE PATTERN'S SHAPE, read once when it compiles ─────────────────────────────────────────────────────────────
 //
@@ -957,6 +1388,11 @@ struct RegexLineScan
 {
     RegexVerdict  verdict          = RegexVerdict::Miss;
     std::uint32_t skippedLineCount = 0;   // lines longer than engineLineBytesMax that could have matched: never matched
+    // Phase 2: set when `verdict == Exhausted` because the per-file MATCH BUDGET was exceeded rather than because
+    // the engine threw. The verdict is deliberately the SAME (Exhausted) so every consumer and gate that already
+    // handles an abandoned file keeps handling it identically and none can be missed; only the DISCLOSURE sentence
+    // differs (kRegexBudgetReason vs kRegexAbandonedReason), which is what this flag selects.
+    bool          budgeted         = false;
 };
 
 // The longest subject the engine may be handed on a thread whose stack is `stackBytes`: SIZE_MAX where the engine does not
@@ -1122,6 +1558,38 @@ struct RegexLiteralPaths
     }
 };
 
+// ── PHASE 2: THE MATCH BUDGET — the libstdc++ backstop ────────────────────────────────────────────────────────
+//
+// The Exhausted catch fires only when the ENGINE gives up. libc++ has a complexity budget and does; libstdc++ has
+// none — "it never throws, so that catch is never reached and the process simply backtracks" (the M2 note at the top
+// of this file) — so a pattern the widened screen still ADMITS can backtrack without bound on Linux, and the guard
+// must supply the bound itself. The budget is per FILE (the line loop's own unit) and counts ENGINE LINE-MATCH
+// ATTEMPTS: how many candidate lines were handed to std::cregex_iterator. A file that exceeds it stops being scanned
+// there — the hits already collected are kept, the file is counted and named through the SAME Exhausted channel
+// (never a silent floor), and the run continues with the next file.
+//
+// Why a COUNT and not a clock: a wall-clock bound makes the verdict depend on machine speed, and this tree's contract
+// is that one pattern gets ONE verdict on every platform (regexbombcheck.sh's header says so in as many words). A
+// count is a pure function of the file and the pattern. Why it cannot bound a SINGLE line: it cannot — a single
+// std::regex call is atomic to its caller. That case is Phase 1's (the structural screen refuses the shapes that
+// backtrack) and the subject-size bound's (maxEngineSubjectBytes/Skipped); the budget covers the AGGREGATE a large
+// file of admissible-but-slow lines produces — the Failure Mode the spec names, "a very large file matched by a
+// cheap pattern on a slow machine".
+//
+// The literal paths never reach this counter (they return before the engine branch below), which is the spec's
+// "keep the budget OUT of the literal paths": budgeting a byte search is dead cost.
+inline constexpr std::uint32_t kRegexFileMatchBudget = 1000000;   // per file; >>10x this tree's own gate corpus (evidence/README.md)
+
+// RIPWIRE_FAULT_REGEX_BUDGET=1 caps the budget to a handful of attempts, the same idiom as
+// RIPWIRE_FAULT_REGEX_LINE_BOUND (a boolean switch that makes an engine-only path reachable everywhere). Non-NDEBUG
+// only, read ONCE per process: a release build compiles the branch to the constant.
+inline constexpr std::uint32_t kRegexFaultBudget = 4;
+inline std::uint32_t regexFileMatchBudget() noexcept
+{
+    static const bool isCapped = rw::faultSwitchOn( "RIPWIRE_FAULT_REGEX_BUDGET" );
+    return isCapped ? kRegexFaultBudget : kRegexFileMatchBudget;
+}
+
 // The line loop behind GuardedRegex::forEachLineMatch. The engine may throw here; the member holds the boundary, and
 // `scan` keeps what was counted before a throw.
 template<typename OnMatch>
@@ -1151,6 +1619,8 @@ void regexScanLines( const std::regex& engine, const RegexLiteralPaths& paths, s
     }
     const bool  canJump   = policy.useLiteralPaths && !hasPlan && paths.required.isLineFree;
     const bool  canFilter = policy.useLiteralPaths && !hasPlan && !paths.required.anyOf.empty();
+    const std::uint32_t budget        = regexFileMatchBudget();   // Phase 2: engine line-match attempts, per file
+    std::uint32_t       engineAttempts = 0;
     std::size_t lineBegin = 0;
     while( !isStopped )
     {
@@ -1181,6 +1651,16 @@ void regexScanLines( const std::regex& engine, const RegexLiteralPaths& paths, s
         }
         else if( isCandidate )
         {
+            // Phase 2 — the budget is checked BEFORE the engine is handed the line, so a file that has already
+            // spent its budget stops without paying for one more attempt. Exhausted (not a new verdict) so every
+            // consumer and gate that already treats an abandoned file as "answer unknown past here" is unchanged.
+            if( engineAttempts >= budget )
+            {
+                scan.verdict  = RegexVerdict::Exhausted;
+                scan.budgeted = true;
+                return;
+            }
+            ++engineAttempts;
             for( auto it = std::cregex_iterator( base + lineBegin, base + matchEnd, engine ); it != std::cregex_iterator(); ++it )
             {
                 if( !report( lineBegin + std::size_t( it->position() ) ) )

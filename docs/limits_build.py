@@ -199,6 +199,14 @@ def render(caps, disc, classes):
     w('document. To reach a declaration, search its file for the name (`grep -n <name> <file>`, or')
     w('`ripwire . --grep=<name>`). A file that declares the same name, value and note more than once shows')
     w('it once, marked `×N`.\n')
+    w('**Known residual — the match budget bounds a file, not a match.** `kRegexFileMatchBudget` (below) is a')
+    w('deterministic count of engine line-match attempts per file, checked BEFORE the engine is handed a line, so it')
+    w('bounds a file\'s AGGREGATE cost: **the budget bounds a file\'s aggregate cost; a single pathological match')
+    w('remains unbounded on libstdc++, tracked by `regex-screen-multiquantifier`.** One `std::regex` call is atomic to')
+    w('its caller, so no caller-side counter can see the work inside it. libc++ returns only because its ENGINE throws')
+    w('`error_complexity`; libstdc++ has no such budget, and the multi-quantifier family (`a*a*a*a*a*b`,')
+    w('`^(a)*(a)*(a)*(a)*(a)*$`) is admitted by the screen by construction. Named and reachable, not bounded — the')
+    w('follow-on spec owns it.\n')
     allcaps = caps
     caps, weights = partition(caps)
     silent = [c for c in caps if not disc.get(c[2])]

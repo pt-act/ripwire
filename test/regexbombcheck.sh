@@ -134,11 +134,18 @@ bombCase "(a{1,3})+b" '(a{1,3})+b'
 bombCase "((a)?)+b"  '((a)?)+b'
 bombCase "(a{3})+b"  '(a{3})+b'
 bombCase "(?:a+)+b"  '(?:a+)+b'
+bombCase "(a|a*)+"   '(a|a*)+'
 
 # The refusal must carry a WORKAROUND, not just a complaint — the L5 refusal set that bar and this one
 # keeps it. (Checked once; the sentence is shared by every construct.)
+#
+# PM-2 (2026-10-12): this used to read `grep -qi 'collapse\|bounded'`. `\|` is GNU BRE alternation, which BSD
+# grep (every stock macOS) treats as a LITERAL pipe — so the arm silently failed on any Mac, with the pristine
+# upstream binary as much as ours (the message demonstrably contains both words). -E selects ERE, where `|` is
+# the alternation every grep agrees on. A portability repair on an arm this round already owns, not a scope
+# change; Linux CI (GNU grep) was never affected.
 "$BIN" "$CORPUS" --regex='(a+)+b' --no-cache >/dev/null 2>"$TMP/err"
-grep -qi 'collapse\|bounded' "$TMP/err" && ok "refusal offers a workaround" \
+grep -qiE 'collapse|bounded' "$TMP/err" && ok "refusal offers a workaround" \
     || no "refusal offers no workaround: $( head -c 300 "$TMP/err" )"
 
 # ── (2) the refusal is STRUCTURAL, not corpus-triggered ─────────────────────────────────────────────────
@@ -219,22 +226,96 @@ fi
 "$BIN" "$CORPUS" --regex='a+b' --no-prefilter --no-cache >"$TMP/s2" 2>/dev/null
 if diff -q "$TMP/s1" "$TMP/s2" >/dev/null; then ok "deterministic on the safe scanning path too"; else no "non-deterministic (safe path)"; fi
 
-# ── (5) informational: the MID-MATCH catch survives as belt-and-braces ──────────────────────────────────
-# The structural guard is a static approximation and says so — overlapping alternation like (a|a)+b is a
-# real bomb it cannot see. The catch around the match is therefore NOT removed; it lives in
-# src/regexguard.h now, and on libc++ it converts a mid-match error_complexity into a REFUSAL by name at
-# exit 1 (it used to skip the file silently, leaving hits= a floor nothing disclosed). It stays
-# informational HERE because on libstdc++ that error never arrives (the whole reason for the guard);
-# test/regexguardcheck.sh arm (b) asserts the refusal on every platform through a fault switch.
-rc="$( capRun 30 "$TMP/out" "$TMP/err" "$CORPUS" --regex='(a|a)+b' --no-prefilter --no-cache )"
-if [ "$rc" = TIMEOUT ]; then
-    printf '  INFO  overlapping-alternation bomb (a|a)+b ran past 30 s — a KNOWN gap in the static guard on a\n'
-    printf '        libstdc++-shaped engine; documented in src/search.h, not asserted here\n'
-elif grep -qi 'regex' "$TMP/err"; then
-    ok "informational: mid-match catch still wired ($( grep -i regex "$TMP/err" | head -1 | head -c 160 ))"
+# ── (5) the ALTERNATION battery: the screen's documented gap, CLOSED statically (Phase 1) ───────────────
+# This section used to print an INFO line — `(a|a)+b` "ran past 30 s — a KNOWN gap in the static guard". Phase 1
+# closes that gap, so the gap line is REPLACED by real arms: every shape the screen now refuses is asserted here —
+# bounded, by name, no hits= on stdout — the same contract bombCase() holds the nested battery to.
+#
+#   (a|a)+b      the audit's own PoC shape — two IDENTICAL branches, the simplest semantic overlap
+#   ^(a|aa)+b$   the audit's live bypass — a branch that is a PREFIX of another
+#   (x|xy)+c$    the prefix shape again, with a trailing literal
+#   (\w|\d)+$    two character classes that INTERSECT (\d is a subset of \w)
+#   ^(ab|cd)+e$  the conservative case: DISJOINT multi-character branches, refused because the screen cannot PROVE
+#                disjointness without matching them (the documented false-positive class; PM ruling (a), 2026-10-12)
+#
+# The mid-match catch the old INFO line described is NOT gone — it is asserted portably by test/regexguardcheck.sh
+# arm (b1) through the fault switch, and for the budget by section (6) below. Nothing here claims otherwise.
+altCase(){
+    local label="$1" pat="$2"
+    local rc; rc="$( capRun 20 "$TMP/out" "$TMP/err" "$CORPUS" --regex="$pat" --no-cache )"
+    if [ "$rc" = TIMEOUT ]; then
+        no "$label: still running after 20 s — the alternation bomb was HANDED TO THE ENGINE (the Phase 1 gap is open again)"
+        return
+    fi
+    [ "$rc" -ge 128 ] && { no "$label: CRASHED (signal death, exit $rc)"; return; }
+    if [ "$rc" -eq 1 ]; then ok "$label: refused at exit 1 (bounded, no scan)"; else no "$label: exit $rc (expected 1)"; fi
+    grep -q 'hits=' "$TMP/out" && no "$label: printed a hits= element — a scan happened" || ok "$label: no hits= element on stdout"
+    if grep -qF -- "$pat" "$TMP/err"; then ok "$label: refusal names the pattern"; else no "$label: refusal does not name the pattern"; fi
+    grep -qi 'backtrack' "$TMP/err" && ok "$label: refusal names the construct (catastrophic backtracking)" \
+        || no "$label: refusal does not name the construct: $( head -c 200 "$TMP/err" )"
+    # PM-1: the alternation refusal must say it cannot PROVE disjointness, NOT that the branches overlap (false for
+    # the multi-character case, e.g. (cat|dog)+). 'backtrack' and a workaround word are the pinned pair; this asserts
+    # the honest wording too, so a future rewording that regresses to the false claim reds here.
+    grep -qiE 'prove|disjoint' "$TMP/err" && ok "$label: refusal is honest about the false-positive class (cannot PROVE disjoint)" \
+        || no "$label: refusal does not state the screen cannot PROVE disjointness: $( head -c 200 "$TMP/err" )"
+}
+
+altCase "(a|a)+b"     '(a|a)+b'
+altCase "^(a|aa)+b$"  '^(a|aa)+b$'
+altCase "(x|xy)+c$"   '(x|xy)+c$'
+altCase "(\w|\d)+$"   '(\w|\d)+$'
+altCase "^(ab|cd)+e$" '^(ab|cd)+e$'
+# (a|a*)+ (a branch that can match EMPTY) is refused by the NESTED arm, not this one: its group contains '*', so the
+# first arm fires and its message is the nested-repetition one. It is asserted as a bombCase above, where that
+# message belongs. The PM-1 honesty assertion below applies only to patterns the ALTERNATION arm actually catches.
+
+# ── (6) the MATCH BUDGET: the libstdc++ backstop (Phase 2) ───────────────────────────────────────────────
+# The Exhausted catch fires only when the ENGINE gives up — libc++ has a complexity budget, libstdc++ has none (it
+# "never throws ... simply backtracks"). The guard now bounds a scan ITSELF: a per-file cap on engine line-match
+# attempts. RIPWIRE_FAULT_REGEX_BUDGET=1 caps the cap to a handful (the RIPWIRE_FAULT_REGEX_LINE_BOUND idiom), so the
+# path is reachable on every platform rather than only where a real bomb exists. The budget's verdict is the SAME
+# Exhausted shape (exit 1, disclosed, no hits=) with its OWN reason sentence, so the reader is pointed at the GUARD,
+# not at an engine complexity budget libstdc++ does not have.
+#
+# Fault switches are compiled out under NDEBUG, so ASK the binary (the prcontextcheck idiom) before asserting.
+RIPWIRE_FAULT_CHARGE_BUFFER=1 "$BIN" "$CORPUS" --top-k=5 --pack-signatures --no-cache >/dev/null 2>"$TMP/probe.err"
+if grep -aq 'open_memstream failed' "$TMP/probe.err"; then FAULTS=1; else FAULTS=0; fi
+
+BUDGET_DIR="$TMP/budgetfix"; mkdir -p "$BUDGET_DIR"
+# many.md holds 10 candidate lines (each carries the required literal 'x'); hit.md holds one, so a run that continues
+# past a budgeted file still has something to find. `x+` is ADMITTED by the screen and is NOT a literal plan, so every
+# candidate line reaches the engine — the counter the budget reads. (Post-Phase-1 there is no screen-admitted BOMB to
+# hand the engine: the screen refuses them, which is the point. The budget's job is the AGGREGATE — the spec's own
+# Failure Mode, "a very large file matched by a cheap pattern".)
+: >"$BUDGET_DIR/many.md"
+for _i in 1 2 3 4 5 6 7 8 9 10; do printf 'x line %s\n' "$_i" >>"$BUDGET_DIR/many.md"; done
+printf 'x marker\n' >"$BUDGET_DIR/hit.md"
+
+# control FIRST: with no fault switch the same corpus scans cleanly, proving the fixture is otherwise fine and that
+# the budget (not the corpus) is what changes the outcome below.
+rc="$( capRun 20 "$TMP/out" "$TMP/err" "$BUDGET_DIR" --regex='x+' --no-cache )"
+if [ "$rc" = 0 ] && grep -q 'hits="[1-9]' "$TMP/out"; then ok "budget control: with no switch the corpus scans cleanly at exit 0 (hits present)"
+else no "budget control: exit $rc — the corpus does not scan cleanly even with no budget in play: $( head -c 200 "$TMP/err" )"; fi
+
+if [ "$FAULTS" -eq 1 ]; then
+    rc="$( RIPWIRE_FAULT_REGEX_BUDGET=1 capRun 20 "$TMP/b.out" "$TMP/b.err" "$BUDGET_DIR" --regex='x+' --no-cache )"
+    if [ "$rc" = TIMEOUT ]; then
+        no "budget: TIMEOUT/KILLED after 20 s — the budget did not stop the scan"
+    elif [ "$rc" -eq 1 ]; then ok "budget: a file over the per-file budget refuses at exit 1 (bounded)"
+    else no "budget: exit $rc (expected a refusal at exit 1)"; fi
+    grep -q 'hits=' "$TMP/b.out" && no "budget: printed a hits= element — a budgeted scan was reported as a measurement" \
+        || ok "budget: no hits= element on stdout"
+    grep -qF 'match budget' "$TMP/b.err" && ok "budget: the refusal names the GUARD's budget" \
+        || no "budget: stderr does not name the match budget: $( head -c 240 "$TMP/b.err" )"
+    grep -qF 'per-file bound on engine line-match attempts' "$TMP/b.err" \
+        && ok "budget: the refusal quotes kRegexBudgetReason (the guard, not the engine)" \
+        || no "budget: stderr does not quote the budget reason: $( head -c 240 "$TMP/b.err" )"
+    # the exact-"1" rule every fault switch in this tree keeps: anything else leaves the budget at its real value.
+    RIPWIRE_FAULT_REGEX_BUDGET=10 "$BIN" "$BUDGET_DIR" --regex='x+' --no-cache >"$TMP/b10.out" 2>/dev/null
+    grep -q 'hits="[1-9]' "$TMP/b10.out" && ok "budget control: RIPWIRE_FAULT_REGEX_BUDGET=10 is not ON (exact \"1\" only)" \
+        || no "budget control: RIPWIRE_FAULT_REGEX_BUDGET=10 changed the answer"
 else
-    printf '  INFO  (a|a)+b completed at exit %s with no degrade alert (expected under NDEBUG, or if the\n' "$rc"
-    printf '        engine simply matched it) — the belt-and-braces catch is not asserted, only kept\n'
+    printf '  INFO  budget: this binary compiles fault switches out (NDEBUG): the budget cap is unobservable BY DESIGN here; the plain-flavour leg proves it\n'
 fi
 
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
