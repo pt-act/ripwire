@@ -1721,10 +1721,18 @@ inline constexpr unsigned kRegexFaultStackShift = 22;   // RIPWIRE_FAULT_REGEX_L
 // release), read ONCE per process (determinism), exact "1" (the rule faultSwitchOn owns). Called ONLY inside
 // the try of a noexcept GuardedRegex member, so the throw it raises never leaves the seam — and before any literal
 // path, so a pattern the engine never sees still reaches it.
-inline void throwIfMatchFaultInjected()
+//
+// RIPWIRE_FAULT_REGEX_MATCH_MIXED=1 is its per-SUBJECT sibling (the RIPWIRE_FAULT_SCAN_STACK_MIXED idiom): it throws
+// only for a subject at or above kRegexFaultMixedSubjectBytes, so a run that ALSO sets RIPWIRE_FAULT_REGEX_BUDGET=1
+// obtains BOTH causes of a stopped --regex scan at once — the engine giving up on a large file, the guard's budget
+// stopping a small many-lined one. The every-subject switch cannot do that: it abandons EVERY file here, before the
+// budget is ever consulted, so the budget count stays 0 (test/regexbombcheck.sh arm (7)).
+inline constexpr std::size_t kRegexFaultMixedSubjectBytes = 64;   // RIPWIRE_FAULT_REGEX_MATCH_MIXED=1: throw only for a subject this long or longer
+inline void throwIfMatchFaultInjected( std::size_t subjectBytes = 0 )
 {
-    static const bool isOn = rw::faultSwitchOn( "RIPWIRE_FAULT_REGEX_MATCH" );
-    if( isOn )
+    static const bool isEverySubject = rw::faultSwitchOn( "RIPWIRE_FAULT_REGEX_MATCH" );
+    static const bool isLargeSubject = rw::faultSwitchOn( "RIPWIRE_FAULT_REGEX_MATCH_MIXED" );
+    if( isEverySubject || ( isLargeSubject && subjectBytes >= kRegexFaultMixedSubjectBytes ) )
     {
         throw std::regex_error( std::regex_constants::error_complexity );
     }
@@ -1744,7 +1752,7 @@ public:
     {
         try
         {
-            throwIfMatchFaultInjected();
+            throwIfMatchFaultInjected( subject.size() );
             if( paths.hasPlan() )
             {
                 return paths.findsPlanMatch( subject.data(), subject.size() ) ? RegexVerdict::Hit : RegexVerdict::Miss;
@@ -1766,7 +1774,7 @@ public:
     {
         try
         {
-            throwIfMatchFaultInjected();
+            throwIfMatchFaultInjected( subject.size() );
             return !paths.holdsRequired( subject.data(), subject.size() )                          ? RegexVerdict::Miss
                  : subject.size() > maxEngineSubjectBytes( stackBytes )                           ? RegexVerdict::Skipped
                  : std::regex_search( subject.data(), subject.data() + subject.size(), captures, engine ) ? RegexVerdict::Hit : RegexVerdict::Miss;
@@ -1795,7 +1803,7 @@ public:
         }
         try
         {
-            throwIfMatchFaultInjected();
+            throwIfMatchFaultInjected( text.size() );
             regexScanLines( engine, paths, text, policy, onMatch, scan );
         }
         catch( const std::regex_error& ) { scan.verdict = RegexVerdict::Exhausted; }

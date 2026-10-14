@@ -51,6 +51,12 @@ deterministic count of engine line-match attempts per file — not a clock, so t
 file the guard cannot scan within that budget stops the verb with exit 1 and no `hits=`, and the message quotes the
 guard's reason rather than sending a reader to an engine complexity budget libstdc++ does not have.
 
+One run can stop files for BOTH causes at once, and the refusal now names both: each cause reports its **own** count,
+reason sentence and first file, so a mixed run no longer attributes the whole stopped set to whichever cause it
+happened to pick (it used to print the total against one cause and name no file for the rest). The budget sentence
+quotes the guard's reason for the budget's files and the engine sentence the engine's reason for the engine's files;
+neither claims the other's. A run with a single cause prints one sentence, byte-identical to before.
+
 Honest patterns are untouched: the 17-pattern golden set is byte-identical on stdout, stderr and exit code, and the
 corpus sweep over 99,845 literals newly refuses 33 and newly admits 0.
 

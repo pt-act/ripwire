@@ -318,5 +318,72 @@ else
     printf '  INFO  budget: this binary compiles fault switches out (NDEBUG): the budget cap is unobservable BY DESIGN here; the plain-flavour leg proves it\n'
 fi
 
+# ── (7) BOTH CAUSES AT ONCE — a mixed run names the engine's files AND the budget's, each with its OWN count ─────
+# The round-4 fix. ONE run can stop files for BOTH reasons: the engine abandoning a match in one file, the guard's
+# budget stopping others. The old message SUMMED every stopped file and attributed that total to a single cause, so a
+# mixed run told the reader that N files hit the budget when only some did — and named no file for the rest. This arm
+# drives both counters nonzero in ONE run and asserts each cause's own count, its own reason sentence and its own file.
+#
+# Why a THIRD switch is needed (measured 2026-10-14): RIPWIRE_FAULT_REGEX_MATCH abandons EVERY file at the top of
+# forEachLineMatch, BEFORE the budget is ever consulted, so setting it beside RIPWIRE_FAULT_REGEX_BUDGET=1 leaves the
+# budget count at 0 — the two switches together can never produce a mixed run. Its per-subject sibling
+# RIPWIRE_FAULT_REGEX_MATCH_MIXED throws only for a subject >= kRegexFaultMixedSubjectBytes, so with the budget switch
+# on the LARGE file is engine-abandoned while the small many-lined files are budget-stopped: both counters, one run.
+if [ "$FAULTS" -eq 1 ]; then
+    MIX_DIR="$TMP/mixfix"; mkdir -p "$MIX_DIR"
+    # engine.md: ONE line of 200 'x' — >= kRegexFaultMixedSubjectBytes (64), so the engine fault fires before any line is read.
+    printf '%0.sx' {1..200} >"$MIX_DIR/engine.md"; printf '\n' >>"$MIX_DIR/engine.md"
+    # budgetA/B.md: 10 short candidate lines each (20 bytes, under the 64-byte fault), so the engine runs and the
+    # per-file budget (RIPWIRE_FAULT_REGEX_BUDGET=1 caps it to 4) stops each at its 5th attempt.
+    for _b in A B; do
+        : >"$MIX_DIR/budget$_b.md"; for _i in 1 2 3 4 5 6 7 8 9 10; do printf 'x\n' >>"$MIX_DIR/budget$_b.md"; done
+    done
+
+    rc="$( RIPWIRE_FAULT_REGEX_MATCH_MIXED=1 RIPWIRE_FAULT_REGEX_BUDGET=1 capRun 20 "$TMP/m.out" "$TMP/m.err" "$MIX_DIR" --regex='x+' --no-prefilter --no-cache )"
+    if [ "$rc" = TIMEOUT ]; then
+        no "mixed: TIMEOUT/KILLED after 20 s"
+    elif [ "$rc" -eq 1 ]; then ok "mixed: a run carrying both causes refuses at exit 1 (bounded)"
+    else no "mixed: exit $rc (expected a refusal at exit 1)"; fi
+    grep -q 'hits=' "$TMP/m.out" && no "mixed: printed a hits= element — a stopped scan was reported as a measurement" \
+        || ok "mixed: no hits= element on stdout"
+
+    # Isolate the refusal sentences: the DISCLOSE lines on stderr mention the same words, so match the refusal head.
+    refusals="$( grep -F 'no hit is reported:' "$TMP/m.err" )"
+    budgetLine="$( printf '%s\n' "$refusals" | grep -F "the scan hit this file's match budget" )"
+    engineLine="$( printf '%s\n' "$refusals" | grep -F 'the regex engine abandoned the match' )"
+
+    # THE FIX: the budget sentence carries the BUDGET's own count (2), not the run's total (3), and names a budget file.
+    if printf '%s\n' "$budgetLine" | grep -qF 'in 2 file(s), first' && printf '%s\n' "$budgetLine" | grep -qF 'budget'; then
+        ok "mixed: the budget sentence reports the BUDGET's own count (2), not the run's total (3)"
+    else
+        no "mixed: the budget sentence does not report its own count: $( printf '%s\n' "$budgetLine" | head -c 260 )"
+    fi
+    # ... and the engine gets its OWN sentence, with the ENGINE's count (1) and an engine file — the old message had none.
+    if [ -n "$engineLine" ] && printf '%s\n' "$engineLine" | grep -qF 'in 1 file(s), first' && printf '%s\n' "$engineLine" | grep -qF 'engine'; then
+        ok "mixed: the engine sentence reports the ENGINE's own count (1) and names an engine file"
+    else
+        no "mixed: no engine sentence with its own count: $( printf '%s\n' "$refusals" | head -c 360 )"
+    fi
+    # each sentence quotes ITS OWN reason word — neither claims the other's files
+    printf '%s\n' "$budgetLine" | grep -qF 'per-file bound on engine line-match attempts' \
+        && ok "mixed: the budget sentence quotes kRegexBudgetReason" \
+        || no "mixed: the budget sentence does not quote kRegexBudgetReason: $( printf '%s\n' "$budgetLine" | head -c 260 )"
+    printf '%s\n' "$engineLine" | grep -qF 'std::regex gave up part-way through it' \
+        && ok "mixed: the engine sentence quotes kRegexAbandonedReason" \
+        || no "mixed: the engine sentence does not quote kRegexAbandonedReason: $( printf '%s\n' "$engineLine" | head -c 260 )"
+    # FIXED ORDER: the budget cause first, every run (the pre-round-4 priority when both were present)
+    if [ "$( printf '%s\n' "$refusals" | head -1 | grep -cF "the scan hit this file's match budget" )" = 1 ]; then
+        ok "mixed: the two sentences are in a fixed order (budget first)"
+    else
+        no "mixed: the sentence order is not the fixed one: $( printf '%s\n' "$refusals" | head -1 | head -c 160 )"
+    fi
+    # determinism: the mixed stderr is a pure function of the corpus, byte for byte
+    RIPWIRE_FAULT_REGEX_MATCH_MIXED=1 RIPWIRE_FAULT_REGEX_BUDGET=1 "$BIN" "$MIX_DIR" --regex='x+' --no-prefilter --no-cache >"$TMP/m2.out" 2>"$TMP/m2.err"
+    { diff -q "$TMP/m.out" "$TMP/m2.out" >/dev/null && diff -q "$TMP/m.err" "$TMP/m2.err" >/dev/null; } \
+        && ok "mixed: deterministic (two mixed refusals byte-identical on stdout AND stderr)" || no "mixed: non-deterministic"
+else
+    printf '  INFO  mixed: this binary compiles fault switches out (NDEBUG): the mixed path is unobservable BY DESIGN here\n'
+fi
+
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit $fail
