@@ -350,10 +350,12 @@ rrun US --uses=selectBaseline \
 # 38 -> 39 2026-10-28 (train 41, lane/upward-2hop): the ranked caller hop's seed choice (forcallerhop.h ForRankedSources::of)
 # reads a candidate's file once through the canonical helper to find its message literal — one new call site, same helper
 # (measured: the one new <u> row at src/forcallerhop.h:322 on the composed tree; main 12056c16 answers 38).
+# 39 -> 40 2026-10-30 (lane/for-file-anchor): src/forfilepage.h loadFileText reads the named file's whole text (the page's
+# top-level lines) through the same canonical helper — one new call site, same helper (CI run 41021256300 answered 40 at fa51be6b).
 rrun RW --uses=readWholeFile \
-&& { [ "$( cnt "$RW" )" = 39 ] \
-    && ok "repo: --uses=readWholeFile count=39 (docparse::detail:: — a seam the audit's rw::-anchored grep missed)" \
-    || no "repo: --uses=readWholeFile expected 39, got '$( cnt "$RW" )'"; }
+&& { [ "$( cnt "$RW" )" = 40 ] \
+    && ok "repo: --uses=readWholeFile count=40 (docparse::detail:: — a seam the audit's rw::-anchored grep missed)" \
+    || no "repo: --uses=readWholeFile expected 40, got '$( cnt "$RW" )'"; }
 rrun WC --callers=writeTally \
 && { [ "$( cnt "$WC" )" = 1 ] \
     && ok "repo: --callers=writeTally count=1 (was 0 — both template call sites are in writeDocDriftPage)" \

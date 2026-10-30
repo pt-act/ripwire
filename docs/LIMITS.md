@@ -411,7 +411,7 @@ Discloses: **none**
 
 ### `src/forfilepage.h`
 
-Discloses: `capped`, `bytes_capped`
+Discloses: `capped`, `bytes_capped`, `dirs_capped`
 
 | constant | value | class | note |
 | --- | --- | --- | --- |

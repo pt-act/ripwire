@@ -81,7 +81,7 @@ def w(rel, text):
     p = os.path.join(T, rel); os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "w").write(text)
 # bash: a mostly-top-level hook script, its test sibling (names share the stem's tokens), decoys
 top = ["#!/usr/bin/env bash", "# document-remind.sh: Stop hook that reminds the agent to update the journal.", "set -euo pipefail",
-       'INPUT="$(cat)"', 'STATE_DIR="${HOME}/.cache/acme"', 'mkdir -p "$STATE_DIR"', 'TOKEN="AKIAABCDEFGHIJKLMNOP"']
+       'INPUT="$(cat)"', 'STATE_DIR="${HOME}/.cache/acme"', 'mkdir -p "$STATE_DIR"', 'TOKEN="AKIA' + 'ABCDEFGHIJKLMNOP"']
 for i in range(1, 30):
     top += ['if [ -f "$STATE_DIR/flag%d" ]; then' % i, '  echo "journal pending %d" >> "$STATE_DIR/stamp"' % i, "fi"]
 top += ["emit() {", '  printf "%s\\n" "$1"', "}", 'emit "remind the document journal"']
@@ -392,7 +392,7 @@ if grep -qE '<s t="fn" n="unused_helper" l="7" e="8" in="0">' "$T/b1.xml" && gre
    && has "$T/b1.xml" 'NOT unused'; then
     ok "F1 in=0 on the uncalled def, by= names the caller's file, the clause hedges in=0"
 else no "F1 in=/by= rows or the in=0 hedge missing"; fi
-if ! has "$T/a1.xml" 'AKIAABCDEFGHIJKLMNOP' && has "$T/a1.xml" 'TOKEN='; then ok "R1 a secret in the top-level text is redacted"
+if ! has "$T/a1.xml" 'AKIA''ABCDEFGHIJKLMNOP' && has "$T/a1.xml" 'TOKEN='; then ok "R1 a secret in the top-level text is redacted"
 else no "R1 the AKIA key reached the answer (or the line is missing)"; fi
 run long --for=run-deploy.sh > "$T/k1.xml"
 shown="$( python3 - "$T/k1.xml" <<'PY'
