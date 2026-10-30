@@ -539,6 +539,18 @@ inline bool definesScopeName( const IngestResult& ing, const std::string& scope,
     return std::any_of( ing.symbols.begin(), ing.symbols.end(), [ & ]( const Symbol& s ) { return s.name == name && s.scope == scope; } );
 }
 
+// FOR-FILE-ANCHOR: the (a0) whole-basename reading of mentionUnkeptFiles — true when it ENDS resolution (the token is a basename the
+// tree has, or only ever a basename candidate); the one file it names is appended when `kept` lacks it.
+inline bool wholeBaseUnkept( const IngestResult& ing, const RawMention& m, const std::vector<std::uint32_t>& kept, std::vector<std::uint32_t>& out )
+{
+    const BaseReading br = wholeBaseReading( ing, m );
+    if( br.files == 1 && std::find( kept.begin(), kept.end(), br.file ) == kept.end() )
+    {
+        out.push_back( br.file );
+    }
+    return br.files > 0 || m.baseOnly;
+}
+
 // WHICH files this mention names that `kept` does not — appended, never cleared, so a caller can union
 // across mentions. This is the old first-hit predicate's body with "return true on the first one" replaced by "collect
 // them all": a bare boolean told the caller something was withheld and neither how much nor how to get it,
@@ -549,12 +561,8 @@ inline void mentionUnkeptFiles( const IngestResult& ing, const RawMention& m, co
                                 std::vector<std::uint32_t>& out )
 {
     ASSUME_NO_ALIAS( kept, out );
-    if( const BaseReading br = wholeBaseReading( ing, m ); br.files > 0 || m.baseOnly )   // FOR-FILE-ANCHOR: applyMentionBoost's (a0) reading
+    if( wholeBaseUnkept( ing, m, kept, out ) )   // FOR-FILE-ANCHOR: applyMentionBoost's (a0) reading ends resolution
     {
-        if( br.files == 1 && std::find( kept.begin(), kept.end(), br.file ) == kept.end() )
-        {
-            out.push_back( br.file );
-        }
         return;
     }
     const std::size_t fileCount = ing.files.size();

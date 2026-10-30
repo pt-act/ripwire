@@ -25,6 +25,7 @@
 #include "docparse.h"    // docparse::detail::readWholeFile
 #include "filter.h"      // isTestPath, isDemoOrGeneratedPath — the tier label on a listed file
 #include "redact.h"      // redactInPlace — the top-level text is file text, redacted like any served body
+#include "taskroute.h"   // taskroute::isOneOf — the one "is this word in the table" predicate
 #include "serialize.h"   // escapeXml, appendCdataSafe, cleanSig, truncateUtf8WithEllipsis
 
 #include <algorithm>
@@ -79,7 +80,7 @@ inline bool isFileNoun( std::string_view lw ) noexcept
 {
     static constexpr std::string_view kNouns[] = { "file", "files", "package", "pkg", "module", "dir", "directory", "folder",
                                                    "script", "source", "header", "crate" };
-    return std::ranges::find( kNouns, lw ) != std::end( kNouns );
+    return taskroute::isOneOf( lw, kNouns, std::size( kNouns ) );
 }
 
 inline bool isListableCodeFile( std::string_view path ) noexcept
@@ -103,85 +104,98 @@ inline void addAnchor( std::vector<FileAnchor>& out, FileAnchor a )
 
 } // namespace filepage
 
+namespace filepage
+{
+
+// files whose root-relative path `match` accepts: the first kForFilePageListFiles kept, all counted
+template<class Match>
+inline void collectFiles( const IngestResult& ing, FileAnchor& a, Match match )
+{
+    for( std::uint32_t f = 0; f < ing.files.size(); ++f )
+    {
+        if( match( f ) )
+        {
+            if( a.files.size() < kForFilePageListFiles ) { a.files.push_back( f ); }
+            ++a.total;
+        }
+    }
+}
+
+// one extracted mention as a file anchor: a bare basename (RawMention::whole), else a path by the longest suffix any file matches,
+// else a directory whose code files a slash token names; total == 0 when it names no file
+inline FileAnchor anchorOfMention( const IngestResult& ing, const mention_detail::RawMention& m )
+{
+    using namespace mention_detail;
+    FileAnchor a;
+    if( !m.whole.empty() )
+    {
+        a.token = m.whole;
+        a.total = filesWithBaseName( ing, m.whole, &a.files, kForFilePageListFiles );
+        return a;
+    }
+    if( !m.isPath )
+    {
+        return a;
+    }
+    for( std::size_t k = 0; k < m.segments.size(); ++k )
+    {
+        a.token += ( k ? "/" : "" ) + m.segments[k];
+    }
+    a.kind = 'p';
+    for( std::size_t suffixLen = m.segments.size(); suffixLen >= 1 && a.total == 0; --suffixLen )
+    {
+        const std::vector<std::string> suffix( m.segments.end() - suffixLen, m.segments.end() );
+        collectFiles( ing, a, [ & ]( std::uint32_t f ) { return pathSuffixMatches( rootRelPath( ing, f ), suffix ); } );
+    }
+    if( a.total == 0 )
+    {
+        a.kind = 'd';
+        collectFiles( ing, a, [ & ]( std::uint32_t f ) { return isListableCodeFile( ing.files[f] ) && dirSuffixMatches( rootRelPath( ing, f ), m.segments ); } );
+    }
+    return a;
+}
+
+// one hyphen/snake word as a file anchor (resolveStemFile's rule): the one file it names, or — no symbol of that name — the
+// several code files sharing that stem (listed, none picked); no file → empty
+inline FileAnchor anchorOfStem( const IngestResult& ing, std::string_view w )
+{
+    using namespace mention_detail;
+    FileAnchor    a;
+    std::uint32_t f = 0, total = 0;
+    a.token.assign( w );
+    a.kind = 's';
+    if( resolveStemFile( ing, w, f, &total ) )
+    {
+        a.files.push_back( f );
+        a.total = 1;
+    }
+    else if( total > 1 && std::none_of( ing.symbols.begin(), ing.symbols.end(), [ & ]( const Symbol& s ) { return s.name == w; } ) )
+    {
+        collectFiles( ing, a, [ & ]( std::uint32_t g ) { const std::string_view base = baseNameOf( ing.files[g] ); return stripExt( base ) == w && isListableCodeFile( base ); } );
+    }
+    return a;
+}
+
+} // namespace filepage
+
 // The subject's file tokens, text order, resolved against the index exactly as the mention anchor reads them (mention.h):
 // a bare basename by RawMention::whole, a path by the longest suffix any file matches, a directory when a slash token names
 // no file but is the directory of indexed code files, and a stem by resolveStemFile's rule (a symbol of that exact name keeps
 // the token a name). A token that resolves to nothing is not an anchor.
 inline std::vector<FileAnchor> resolveFileAnchors( const IngestResult& ing, std::string_view task )
 {
-    using namespace mention_detail;
     std::vector<FileAnchor> out;
-    const std::uint32_t     fileCount = std::uint32_t( ing.files.size() );
-    for( const RawMention& m : extractMentions( task ) )
+    for( const mention_detail::RawMention& m : mention_detail::extractMentions( task ) )
     {
-        FileAnchor a;
-        if( !m.whole.empty() )
-        {
-            a.token = m.whole;
-            a.kind  = 'b';
-            a.total = filesWithBaseName( ing, m.whole, &a.files, kForFilePageListFiles );
-        }
-        else if( m.isPath )
-        {
-            for( std::size_t suffixLen = m.segments.size(); suffixLen >= 1 && a.total == 0; --suffixLen )
-            {
-                const std::vector<std::string> suffix( m.segments.end() - suffixLen, m.segments.end() );
-                for( std::uint32_t f = 0; f < fileCount; ++f )
-                {
-                    if( pathSuffixMatches( rootRelPath( ing, f ), suffix ) )
-                    {
-                        if( a.files.size() < kForFilePageListFiles ) { a.files.push_back( f ); }
-                        ++a.total;
-                    }
-                }
-            }
-            a.kind = 'p';
-            if( a.total == 0 )
-            {
-                a.kind = 'd';
-                for( std::uint32_t f = 0; f < fileCount; ++f )
-                {
-                    if( filepage::isListableCodeFile( ing.files[f] ) && dirSuffixMatches( rootRelPath( ing, f ), m.segments ) )
-                    {
-                        if( a.files.size() < kForFilePageListFiles ) { a.files.push_back( f ); }
-                        ++a.total;
-                    }
-                }
-            }
-            for( std::size_t k = 0; k < m.segments.size(); ++k )
-            {
-                a.token += ( k ? "/" : "" ) + m.segments[k];
-            }
-        }
-        if( a.total > 0 )
+        if( FileAnchor a = filepage::anchorOfMention( ing, m ); a.total > 0 )
         {
             filepage::addAnchor( out, std::move( a ) );
         }
     }
-    for( const std::string_view w : extractStemTokens( task ) )
+    for( const std::string_view w : mention_detail::extractStemTokens( task ) )
     {
-        FileAnchor    a;
-        std::uint32_t f = 0, total = 0;
-        if( resolveStemFile( ing, w, f, &total ) )
+        if( FileAnchor a = filepage::anchorOfStem( ing, w ); a.total > 0 )
         {
-            a.files.push_back( f );
-        }
-        else if( total > 1 && std::none_of( ing.symbols.begin(), ing.symbols.end(), [ & ]( const Symbol& s ) { return s.name == w; } ) )
-        {
-            for( std::uint32_t g = 0; g < fileCount && a.files.size() < kForFilePageListFiles; ++g )
-            {
-                const std::string_view base = baseNameOf( ing.files[g] );
-                if( stripExt( base ) == w && filepage::isListableCodeFile( base ) )
-                {
-                    a.files.push_back( g );
-                }
-            }
-        }
-        if( !a.files.empty() )
-        {
-            a.token.assign( w );
-            a.kind  = 's';
-            a.total = std::max<std::uint32_t>( total, 1 );
             filepage::addAnchor( out, std::move( a ) );
         }
     }
@@ -223,8 +237,8 @@ namespace filepage
 // 1-based line of byte `at` in `src`, by the line-start table
 inline std::uint32_t lineOfByte( const std::vector<std::uint32_t>& lineStart, std::uint32_t at ) noexcept
 {
-    const auto it = std::upper_bound( lineStart.begin(), lineStart.end(), at );
-    return std::uint32_t( it - lineStart.begin() );
+    return std::uint32_t( std::partition_point( lineStart.begin(), lineStart.end(), [ at ]( std::uint32_t start ) { return start <= at; } )
+                          - lineStart.begin() );
 }
 
 struct CallerFacts
@@ -306,59 +320,176 @@ inline std::string pathRegexOf( std::string_view rel )
     return re + "$";
 }
 
-// one file's page: its defs in line order, then (a script) its top-level text
-inline void renderOneFile( std::string& out, const IngestResult& ing, const Graph& g, std::uint32_t f, RedactCounts* redact,
-                           bool withMainNext, std::vector<char>& esc )
+// One file's text, read now, and its line-start table (lineCount 0 when the read failed: nothing is claimed from it).
+struct FileText
 {
-    const std::string_view     rel = rootRelPath( ing, f );
-    const std::optional<std::string> read = docparse::detail::readWholeFile( diskPath( ing, f ) );
-    const std::string          src = read ? *read : std::string();
+    std::string                src;
     std::vector<std::uint32_t> lineStart{ 0 };
-    for( std::uint32_t i = 0; i < src.size(); ++i )
-    {
-        if( src[i] == '\n' && i + 1 < src.size() ) { lineStart.push_back( i + 1 ); }
-    }
-    const std::uint32_t lineCount = src.empty() ? 0u : std::uint32_t( lineStart.size() );
+    std::uint32_t              lineCount = 0;
+    bool                       read      = false;
 
+    std::string_view line( std::uint32_t x ) const noexcept   // 1-based, with its newline
+    {
+        const std::uint32_t s0 = lineStart[x - 1], s1 = x < lineCount ? lineStart[x] : std::uint32_t( src.size() );
+        return std::string_view( src ).substr( s0, s1 - s0 );
+    }
+    bool blank( std::uint32_t x ) const noexcept { return line( x ).find_first_not_of( " \t\r\n" ) == std::string_view::npos; }
+};
+
+inline FileText loadFileText( const IngestResult& ing, std::uint32_t f )
+{
+    FileText t;
+    if( std::optional<std::string> read = docparse::detail::readWholeFile( diskPath( ing, f ) ) )
+    {
+        t.src  = std::move( *read );
+        t.read = true;
+    }
+    for( std::uint32_t i = 0; i < t.src.size(); ++i )
+    {
+        if( t.src[i] == '\n' && i + 1 < t.src.size() ) { t.lineStart.push_back( i + 1 ); }
+    }
+    t.lineCount = t.src.empty() ? 0u : std::uint32_t( t.lineStart.size() );
+    return t;
+}
+
+// the file's defs (no function-local def, no <file-scope> row) in line order; `modScope` says whether a <file-scope> row exists
+inline std::vector<NodeId> fileDefsInLineOrder( const IngestResult& ing, std::uint32_t f, bool& modScope )
+{
     std::vector<NodeId> defs;
-    bool                modScope = false;
+    modScope = false;
     for( const Symbol& s : ing.symbols )
     {
         if( s.fileId != f )
         {
             continue;
         }
-        if( s.kind == SymKind::ModuleScope )
-        {
-            modScope = true;
-            continue;
-        }
-        if( s.fnLocal == 0 )
+        modScope = modScope || s.kind == SymKind::ModuleScope;
+        if( s.kind != SymKind::ModuleScope && s.fnLocal == 0 )
         {
             defs.push_back( s.id );
         }
     }
     std::sort( defs.begin(), defs.end(), [ & ]( NodeId a, NodeId b ) { return ing.symbols[a].line != ing.symbols[b].line ? ing.symbols[a].line < ing.symbols[b].line : a < b; } );
+    return defs;
+}
 
-    // the lines the defs cover (a read failure leaves none: no top-level text is claimed from a file that was not read)
-    std::vector<char> covered( lineCount + 2, 0 );
+// which lines the defs' spans cover (index 1..lineCount)
+inline std::vector<char> coveredLines( const IngestResult& ing, const std::vector<NodeId>& defs, const FileText& t )
+{
+    std::vector<char> covered( t.lineCount + 2, 0 );
     for( const NodeId id : defs )
     {
         const Symbol& s = ing.symbols[id];
-        if( s.endByte <= s.sigStartByte || s.endByte > src.size() )
+        if( s.endByte <= s.sigStartByte || s.endByte > t.src.size() )
         {
             continue;
         }
-        const std::uint32_t a = lineOfByte( lineStart, s.sigStartByte ), b = lineOfByte( lineStart, s.endByte - 1 );
-        for( std::uint32_t l = a; l <= b && l <= lineCount; ++l ) { covered[l] = 1; }
+        const std::uint32_t b = std::min( lineOfByte( t.lineStart, s.endByte - 1 ), t.lineCount );
+        std::fill( covered.begin() + lineOfByte( t.lineStart, s.sigStartByte ), covered.begin() + b + 1, char( 1 ) );
     }
-    std::uint32_t coveredCount = 0;
-    for( std::uint32_t l = 1; l <= lineCount; ++l ) { coveredCount += covered[l] ? 1u : 0u; }
+    return covered;
+}
 
+inline void appendCallerAttrs( std::string& out, const IngestResult& ing, const CallerFacts& cf, std::vector<char>& esc )
+{
+    out += std::format( " in=\"{}\"", cf.callers );
+    if( !cf.byFile.empty() )
+    {
+        out += " by=\"";
+        for( std::size_t i = 0; i < cf.byFile.size() && i < kForFilePageCallerFiles; ++i )
+        {
+            out += i ? "," : "";
+            out += escapeXml( rootRelPath( ing, cf.byFile[i].second ), esc );
+        }
+        out += "\"";
+        if( cf.byFile.size() > kForFilePageCallerFiles )
+        {
+            out += std::format( " by_total=\"{}\"", cf.byFile.size() );
+        }
+    }
+    if( cf.allByName )
+    {
+        out += " via=\"name\"";
+    }
+}
+
+// one def row: <s t= n= l= e= in= by= via=>signature</s>
+inline void appendDefRow( std::string& out, const IngestResult& ing, const Graph& g, const Symbol& s, const FileText& t, RedactCounts* redact,
+                          std::vector<char>& esc )
+{
+    out += std::format( "<s t=\"{}\" n=\"", symTag( s.kind ) );
+    out += escapeXml( s.name, esc );
+    out += std::format( "\" l=\"{}\"", s.line );
+    const bool spanRead = s.endByte > s.sigStartByte && s.endByte <= t.src.size();
+    if( const std::uint32_t e = spanRead ? lineOfByte( t.lineStart, s.endByte - 1 ) : 0u; e > s.line )
+    {
+        out += std::format( " e=\"{}\"", e );
+    }
+    appendCallerAttrs( out, ing, callerFactsOf( ing, g, s.id ), esc );
+    out += ">";
+    if( s.sigStartByte < s.sigEndByte && s.sigEndByte <= t.src.size() )
+    {
+        std::string sig = cleanSig( t.src.data(), s.sigStartByte, s.sigEndByte, redact );
+        truncateUtf8WithEllipsis( sig, kForFilePageSigBytes );
+        out += escapeXml( sig, esc );
+    }
+    out += "</s>";
+}
+
+// The top-level text: each run of lines outside every def (blank edges trimmed) as <top l= e=>CDATA</top>, until the line or byte
+// cap; what the cap left is disclosed once (<top_cut top_lines= shown= rest=>, rest= from the first line not shown to the last).
+inline void appendTopLevel( std::string& out, const FileText& t, const std::vector<char>& covered, RedactCounts* redact )
+{
+    std::uint32_t topTotal = 0, shownLines = 0, shownBytes = 0, restFrom = 0, restTo = 0;
+    for( std::uint32_t l = 1; l <= t.lineCount; ++l ) { topTotal += covered[l] ? 0u : 1u; }
+    for( std::uint32_t l = 1; l <= t.lineCount; )
+    {
+        if( covered[l] ) { ++l; continue; }
+        std::uint32_t a = l;
+        while( l <= t.lineCount && !covered[l] ) { ++l; }
+        std::uint32_t b = l - 1;
+        while( a <= b && t.blank( a ) ) { ++a; }
+        while( b >= a && t.blank( b ) ) { --b; }
+        if( a > b || restFrom != 0 )
+        {
+            restTo = a > b ? restTo : b;
+            continue;
+        }
+        std::uint32_t e = a, bytes = 0;
+        for( ; e <= b && shownLines < kForFilePageTopLines && shownBytes + bytes + t.line( e ).size() <= kForFilePageTopBytes; ++e )
+        {
+            bytes += std::uint32_t( t.line( e ).size() );
+            ++shownLines;
+        }
+        if( e > a )
+        {
+            std::string text( std::string_view( t.src ).substr( t.lineStart[a - 1], bytes ) );
+            while( !text.empty() && ( text.back() == '\n' || text.back() == '\r' ) ) { text.pop_back(); }
+            redactInPlace( text, redact );
+            out += std::format( "<top l=\"{}\" e=\"{}\"><![CDATA[", a, e - 1 );
+            appendCdataSafe( text, out );
+            out += "]]></top>";
+            shownBytes += bytes;
+        }
+        if( e <= b )
+        {
+            restFrom = e;
+            restTo   = b;
+        }
+    }
+    if( restFrom != 0 )
+    {
+        out += std::format( "<top_cut top_lines=\"{}\" shown=\"{}\" rest=\"{}-{}\"/>", topTotal, shownLines, restFrom, restTo );
+    }
+}
+
+inline void appendFileOpenTag( std::string& out, std::string_view rel, const FileText& t, std::size_t defCount, std::string_view mainNext,
+                               std::vector<char>& esc )
+{
     out += "<named-file p=\"";
     out += escapeXml( rel, esc );
-    out += std::format( "\" lines=\"{}\" defs=\"{}\"", lineCount, defs.size() );
-    if( defs.size() > kForFilePageDefRows )
+    out += std::format( "\" lines=\"{}\" defs=\"{}\"", t.lineCount, defCount );
+    if( defCount > kForFilePageDefRows )
     {
         out += std::format( " shown=\"{}\" capped=\"1\"", kForFilePageDefRows );
     }
@@ -366,118 +497,40 @@ inline void renderOneFile( std::string& out, const IngestResult& ing, const Grap
     {
         out += std::format( " tier=\"{}\"", tier );
     }
-    if( !read )
+    if( !t.read )
     {
         out += " unread=\"1\"";   // the file could not be read now: lines=0 is "not read", never "empty"
     }
-    const bool hasFn = std::ranges::any_of( defs, [ & ]( NodeId id ) { return ing.symbols[id].kind == SymKind::Function || ing.symbols[id].kind == SymKind::Method; } );
-    if( withMainNext && hasFn )
+    if( !mainNext.empty() )
     {
-        const std::string q = "--graph-query=not(file(all,\"" + pathRegexOf( rel ) + "\"),callees(name(\"main\"),16))";
         out += " next=\"";
-        out += escapeXml( q, esc );
+        out += escapeXml( mainNext, esc );
         out += "\"";
     }
     out += ">";
+}
 
+// one file's page: its defs in line order, then (a script) its top-level text
+inline void renderOneFile( std::string& out, const IngestResult& ing, const Graph& g, std::uint32_t f, RedactCounts* redact,
+                           bool withMainNext, std::vector<char>& esc )
+{
+    const std::string_view    rel = rootRelPath( ing, f );
+    const FileText            t   = loadFileText( ing, f );
+    bool                      modScope = false;
+    const std::vector<NodeId> defs = fileDefsInLineOrder( ing, f, modScope );
+    const bool hasFn = std::ranges::any_of( defs, [ & ]( NodeId id ) { return ing.symbols[id].kind == SymKind::Function || ing.symbols[id].kind == SymKind::Method; } );
+    const std::string mainNext = withMainNext && hasFn ? "--graph-query=not(file(all,\"" + pathRegexOf( rel ) + "\"),callees(name(\"main\"),16))" : std::string();
+    appendFileOpenTag( out, rel, t, defs.size(), mainNext, esc );
     for( std::size_t k = 0; k < defs.size() && k < kForFilePageDefRows; ++k )
     {
-        const Symbol& s = ing.symbols[ defs[k] ];
-        out += std::format( "<s t=\"{}\" n=\"", symTag( s.kind ) );
-        out += escapeXml( s.name, esc );
-        out += std::format( "\" l=\"{}\"", s.line );
-        if( s.endByte > s.sigStartByte && s.endByte <= src.size() )
-        {
-            const std::uint32_t e = lineOfByte( lineStart, s.endByte - 1 );
-            if( e > s.line ) { out += std::format( " e=\"{}\"", e ); }
-        }
-        const CallerFacts cf = callerFactsOf( ing, g, s.id );
-        out += std::format( " in=\"{}\"", cf.callers );
-        if( !cf.byFile.empty() )
-        {
-            out += " by=\"";
-            for( std::size_t i = 0; i < cf.byFile.size() && i < kForFilePageCallerFiles; ++i )
-            {
-                out += i ? "," : "";
-                out += escapeXml( rootRelPath( ing, cf.byFile[i].second ), esc );
-            }
-            out += "\"";
-            if( cf.byFile.size() > kForFilePageCallerFiles )
-            {
-                out += std::format( " by_total=\"{}\"", cf.byFile.size() );
-            }
-        }
-        if( cf.allByName )
-        {
-            out += " via=\"name\"";
-        }
-        out += ">";
-        if( s.sigStartByte < s.sigEndByte && s.sigEndByte <= src.size() )
-        {
-            std::string sig = cleanSig( src.data(), s.sigStartByte, s.sigEndByte, redact );
-            truncateUtf8WithEllipsis( sig, kForFilePageSigBytes );
-            out += escapeXml( sig, esc );
-        }
-        out += "</s>";
+        appendDefRow( out, ing, g, ing.symbols[ defs[k] ], t, redact, esc );
     }
-
     // the top-level text: a file with a <file-scope> row whose defs cover under half its lines (a script, not a module of defs)
-    if( modScope && lineCount > 0 && coveredCount * 2 < lineCount )
+    const std::vector<char> covered = coveredLines( ing, defs, t );
+    const std::size_t       coveredCount = std::size_t( std::count( covered.begin(), covered.end(), char( 1 ) ) );
+    if( modScope && t.lineCount > 0 && coveredCount * 2 < t.lineCount )
     {
-        std::uint32_t topTotal = 0;
-        for( std::uint32_t l = 1; l <= lineCount; ++l ) { topTotal += covered[l] ? 0u : 1u; }
-        std::uint32_t shownLines = 0, shownBytes = 0, restFrom = 0, restTo = 0;
-        std::uint32_t l = 1;
-        while( l <= lineCount )
-        {
-            if( covered[l] ) { ++l; continue; }
-            std::uint32_t a = l;
-            while( l <= lineCount && !covered[l] ) { ++l; }
-            std::uint32_t b = l - 1;
-            const auto lineText = [ & ]( std::uint32_t x ) {
-                const std::uint32_t s0 = lineStart[x - 1], s1 = x < lineCount ? lineStart[x] : std::uint32_t( src.size() );
-                return std::string_view( src ).substr( s0, s1 - s0 ); };
-            const auto blank = [ & ]( std::uint32_t x ) { return lineText( x ).find_first_not_of( " \t\r\n" ) == std::string_view::npos; };
-            while( a <= b && blank( a ) ) { ++a; }
-            while( b >= a && blank( b ) ) { --b; }
-            if( a > b )
-            {
-                continue;
-            }
-            if( restFrom != 0 )
-            {
-                restTo = b;
-                continue;
-            }
-            std::uint32_t e = a;
-            std::uint32_t bytes = 0;
-            for( ; e <= b && shownLines < kForFilePageTopLines; ++e )
-            {
-                const std::uint32_t lb = std::uint32_t( lineText( e ).size() );
-                if( shownBytes + bytes + lb > kForFilePageTopBytes ) { break; }
-                bytes += lb;
-                ++shownLines;
-            }
-            if( e > a )
-            {
-                std::string text( std::string_view( src ).substr( lineStart[a - 1], bytes ) );
-                while( !text.empty() && ( text.back() == '\n' || text.back() == '\r' ) ) { text.pop_back(); }
-                redactInPlace( text, redact );
-                out += std::format( "<top l=\"{}\" e=\"{}\"><![CDATA[", a, e - 1 );
-                appendCdataSafe( text, out );
-                out += "]]></top>";
-                shownBytes += bytes;
-            }
-            if( e <= b )
-            {
-                restFrom = e;
-                restTo   = b;
-            }
-        }
-        if( restFrom != 0 )
-        {
-            out += std::format( "<top_cut top_lines=\"{}\" shown=\"{}\" rest=\"{}-{}\"/>", topTotal, shownLines, restFrom, restTo );
-        }
+        appendTopLevel( out, t, covered, redact );
     }
     out += "</named-file>";
 }
