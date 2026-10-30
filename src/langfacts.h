@@ -102,6 +102,10 @@ struct LangFacts
     /// declined fact, never an edge (ingest_sidecap.h; the predicate itself lives in ingest_elixir.h).
     bool hasInertQuoteRegions = false;
 
+    /// Not a code language — prose, configuration or data (and no recognised language at all): a bare basename with such an
+    /// extension (`book.toml`, `SUMMARY.md`) named in a --for task is context, never a file anchor (mention.h isCodeExtension).
+    bool notCode = false;
+
     /// C++: defect-shape's whole-tree input is the macro-name set, and a changed C++ file (a .h reads as C++) can only be
     /// judged against the base's whole set. A changed C or Objective-C file does not need it, by today's behaviour
     /// (verbs_quality.h; pinned by test/qddegradecheck.sh (E3)).
@@ -259,7 +263,7 @@ inline constexpr std::array<LangFacts, kLangCount> kLangFacts = { {
       .instanceReceiver = "self" },
     { .lang = Lang::Swift, .writtenModule = WrittenModuleRule::DirsOnly, .instanceReceiver = "self" },
     { .lang = Lang::ObjC, .noNestedNamedFunctions = true, .transitiveIncludes = true, .staticLinkage = true },
-    { .lang = Lang::Markdown, .linkSections = true },
+    { .lang = Lang::Markdown, .notCode = true, .linkSections = true },
     { .lang = Lang::JavaScript, .structuralTyping = true, .importBoundConstruction = true, .baseImportEvidence = BaseImportEvidence::JsImport,
       .writtenBindingUndecided = true, .objectLiteralMembers = true, .containmentOwners = true },
     { .lang = Lang::Bash },
@@ -267,13 +271,13 @@ inline constexpr std::array<LangFacts, kLangCount> kLangFacts = { {
       .writtenModule = WrittenModuleRule::DirsOnly },
     { .lang = Lang::Ruby, .classObjectLookup = true, .mixinAncestry = true, .keepsUnshapedSubscript = true, .constantPathReceiver = true,
       .memberSeparator = "#", .writtenModule = WrittenModuleRule::ConstantPath, .instanceReceiver = "self" },
-    { .lang = Lang::Unknown },
-    { .lang = Lang::Json },
+    { .lang = Lang::Unknown, .notCode = true },
+    { .lang = Lang::Json, .notCode = true },
     { .lang = Lang::CSharp, .overloadsWithoutArity = true, .writtenModule = WrittenModuleRule::DirsOnly },
     { .lang = Lang::C, .noNestedNamedFunctions = true, .memberSeparator = "::", .transitiveIncludes = true, .writtenModule = WrittenModuleRule::SourceChain,
       .staticLinkage = true },
-    { .lang = Lang::Toml },
-    { .lang = Lang::Yaml },
+    { .lang = Lang::Toml, .notCode = true },
+    { .lang = Lang::Yaml, .notCode = true },
     { .lang = Lang::Php, .memberSeparator = "::" },
     { .lang = Lang::Lua, .dashDashComments = true },
     { .lang = Lang::Elixir, .hasInertQuoteRegions = true },

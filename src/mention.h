@@ -37,6 +37,7 @@
 #include "model.h"
 #include "filter.h"   // rankTierMultiplierOf / isTestSymbol — the §P4 test/fixture tier a named identifier may not lift (rule b);
                       // queryshape::classify — the shipped trace classifier (rule a)
+#include "langfacts.h"   // langFacts().notCode — FOR-FILE-ANCHOR
 #include "lintrules.h"   // langOfPath — FOR-FILE-ANCHOR: is a bare basename's extension a code language (isCodeExtension)
 #include "infra/namesplit.h"   // isIdentChar — the ONE ASCII identifier-character predicate
 #include "infra/sortutil.h"    // svLess — string_view order without libstdc++'s length subtraction (portablebuildcheck #6)
@@ -280,8 +281,7 @@ inline bool isCodeExtension( std::string_view ext ) noexcept
     }
     std::string probe( "x." );
     probe.append( ext );
-    const Lang lang = langOfPath( probe );
-    return lang != Lang::Unknown && lang != Lang::Markdown && lang != Lang::Json && lang != Lang::Toml && lang != Lang::Yaml;
+    return !langFacts( langOfPath( probe ) ).notCode;
 }
 
 // the indexed files whose basename is exactly `base` (fileId order); `out` gets at most `cap` of them, the return is the count
