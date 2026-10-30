@@ -135,7 +135,8 @@ inline void collectFiles( const IngestResult& ing, FileAnchor& a, Match match )
 }
 
 // The code files of the directories a slash token names (dirSuffixMatches), in the order the page serves them: a directory spelled
-// exactly as written first, non-test before test, path order within. `files` keeps the first kForFilePageListFiles of that order,
+// exactly as written first, non-test before test, a module root (mod.rs, __init__.py, index.ts, lib.rs, main.go — the file that
+// says what the directory is) first within them, path order after. `files` keeps the first kForFilePageListFiles of that order,
 // `total` counts every one, and `dirs` holds one row per distinct directory with its own count.
 inline FileAnchor collectDirFiles( const IngestResult& ing, const std::vector<std::string>& segments, const std::string& token )
 {
@@ -143,7 +144,7 @@ inline FileAnchor collectDirFiles( const IngestResult& ing, const std::vector<st
     FileAnchor dir;
     dir.kind  = 'd';
     dir.token = token;
-    struct Hit { std::uint32_t f; bool inexact, test; std::string_view dirOf; };
+    struct Hit { std::uint32_t f; bool inexact, test, notRoot; std::string_view dirOf; };
     std::vector<Hit> hits;
     for( std::uint32_t f = 0; f < ing.files.size(); ++f )
     {
@@ -153,11 +154,13 @@ inline FileAnchor collectDirFiles( const IngestResult& ing, const std::vector<st
             continue;
         }
         const std::string_view base = baseNameOf( rel );
+        const std::string_view stem = stripExt( base );
+        const bool             root = stem == "mod" || stem == "__init__" || stem == "index" || stem == "lib" || stem == "main";
         const std::string_view dirOf = rel.substr( 0, rel.size() - base.size() - 1 );
-        hits.push_back( { f, dirOf != token, isTestPath( rel ), dirOf } );
+        hits.push_back( { f, dirOf != token, isTestPath( rel ), !root, dirOf } );
     }
     std::stable_sort( hits.begin(), hits.end(), []( const Hit& x, const Hit& y )
-                      { return std::tie( x.inexact, x.test ) < std::tie( y.inexact, y.test ); } );
+                      { return std::tie( x.inexact, x.test, x.notRoot ) < std::tie( y.inexact, y.test, y.notRoot ); } );
     dir.total = std::uint32_t( hits.size() );
     for( const Hit& h : hits )
     {

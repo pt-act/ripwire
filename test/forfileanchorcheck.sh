@@ -155,6 +155,13 @@ for root in ("y2", "y2b"):
     w(root + "/pkg/x/src/utils/b.ts", "export function b(): number {\n  return 2\n}\n")
     w(root + "/pkg/x/src/utils/c.ts", "export function c(): number {\n  return 3\n}\n")
 w("y2/pkg/y/src/utils.ts", "export function y(): number {\n  return 4\n}\n")
+# Y3: eight files, the module root sorts last by path; a Python package whose __init__.py sorts after its siblings
+for i in range(1, 8):
+    w("y3/crate/src/mw/f%d.rs" % i, "pub fn f%d_run() -> u32 {\n    %d\n}\n" % (i, i))
+w("y3/crate/src/mw/mod.rs", "pub fn mw_root() -> u32 {\n    0\n}\n")
+for i in range(1, 8):
+    w("y3p/pkg/ware/f%d.ts" % i, "export function f%d_run(): number {\n  return %d\n}\n" % (i, i))
+w("y3p/pkg/ware/index.ts", "export function ware_root(): number {\n  return 0\n}\n")
 # T1: a test twin (tier=) and a def called from four files (by_total=)
 # H2/N3: a C header carries no next= (its prototypes' callers bind to the definitions); a path naming a prose file is no page
 w("d7/docs/guide.md", "# Guide\n\n## Install\n\ntext\n")
@@ -327,6 +334,11 @@ firstf="$( grep -o '<named-file p="[^"]*"' "$T/y2b.xml" | head -1 )"
 if has "$T/y2b.xml" '<named-dir p="src/utils" files="3">' && [ "$firstf" = '<named-file p="src/utils/a.ts"' ]; then
     ok "Y2 a directory with no same-named file: the directory as written is paged first ($firstf)"
 else no "Y2 src/utils (directories only): first page is $firstf, not src/utils/a.ts"; fi
+run y3 --for=crate/src/mw > "$T/y3.xml"; run y3p --for=pkg/ware > "$T/y3p.xml"
+f3="$( grep -o '<named-file p="[^"]*"' "$T/y3.xml" | head -1 )"; f3p="$( grep -o '<named-file p="[^"]*"' "$T/y3p.xml" | head -1 )"
+if [ "$f3" = '<named-file p="crate/src/mw/mod.rs"' ] && [ "$f3p" = '<named-file p="pkg/ware/index.ts"' ] && has "$T/y3.xml" 'files="8" shown="6" capped="1"'; then
+    ok "Y3 the module root (mod.rs, index.ts) is the directory's first page, not the last by path order"
+else no "Y3 module root not first: $f3 / $f3p"; fi
 
 # ── M4: a minified file with no top-level row is not an empty page ──────────────────────────────────────────────────────────────
 run m4 --for=mini.js > "$T/m4.xml"
