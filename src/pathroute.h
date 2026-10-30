@@ -141,7 +141,7 @@ inline std::string pathRouteRootAttrs( const IngestResult& ing, const PathRouteV
     out += " route_by_name=\"" + std::to_string( v.byName ) + "\" route_cands=\"" + std::to_string( v.cands ) + "\"" + ( v.cands >= kPathRouteCandsCeiling ? " route_cands_capped=\"1\"" : "" );
     if( ( v.refused || v.byName >= kPathRouteRefuseNameHops ) && !hasNext && from < ing.symbols.size() )
     {
-        out += nextAttrXml( "--callees=" + pathPairSelector( ing, from, singleRoot, rootPrefix ) );
+        out += nextAttrXml( nextFlag( "--callees=", pathPairSelector( ing, from, singleRoot, rootPrefix ) ) );   // shell-safe: a path with a space is quoted
     }
     return out;
 }
