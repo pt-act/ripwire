@@ -74,7 +74,9 @@ WEIGHT_NAME = re.compile(r'Mul(?!ti)|Blend|Share|Tolerance|Headroom|Decay|Weight
 # be judged neither by an EVALS anchor nor by shown=/total=. Rendering it as an **unsourced** ranking
 # parameter asked for a measurement that could not exist and stated something false about it; BOUNDARY,
 # the third answer the census kept getting wrong, is the right class.
-NOT_A_WEIGHT = re.compile(r'AgeDays|RadixThreshold|ExtendedLengthThreshold')
+# `RefuseCandsThreshold` (path-route-v2 fix1) is the same kind: the route_cands count at which a --path chain of 4+ by-name hops is
+# refused instead of hedged. It decides which SIDE of a verdict a chain falls on and truncates nothing.
+NOT_A_WEIGHT = re.compile(r'AgeDays|RadixThreshold|ExtendedLengthThreshold|RefuseCandsThreshold')
 
 def is_weight(name, val):
     if NOT_A_WEIGHT.search(name):
