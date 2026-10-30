@@ -46,6 +46,10 @@
 #   K3-K5 [P] (primary N1) the def-row cap (41 defs), the dir-file cap (7 files) and the list cap (9 same-named files) are disclosed
 #   H2 [P] (lens N1) a C header's page carries no next=; N3 [P] (lens N3) a path naming a .md file pages nothing
 #   T1 [P] (primary N1) tier="test" on a listed file; by_total= beside by=
+#   Y1..Y4 [P] (delta review X1..X4) next= lists a METHOD (kind=method) beside the free functions; a dir= row names ONE directory with
+#          ITS OWN count, the directory as written first (src/utils/ before pkg/x/src/utils/), and a directory with no same-named file
+#          pages that directory first; the module root (mod.rs, index.ts) is a directory's first page; a listing appended after a
+#          full directory obeys the 16 KB bound
 #   L1 [P] the clause rides in both dialects and defines every attribute the page elements carry (whole-name search in the clause)
 #   X1 [G] determinism  X2 [G] xmllint well-formed (when xmllint exists)  X3 [G] no "--" inside the legend comment
 #
@@ -142,6 +146,9 @@ for f in range(1, 8):
     w("k4/pkg/seven/f%d.py" % f, "def seven_f%d():\n    return %d\n" % (f, f))
 for d in range(1, 10):
     w("k5/pkg%d/dup.py" % d, "def dup_%d():\n    return %d\n" % (d, d))
+# Y1: a JS class holds methods (kind=method): next= must list an uncalled METHOD, not only free functions; a C main roots the closure
+w("y1/web/app.js", "class Server {\n  start() {\n    return helperA();\n  }\n  orphanMethod() {\n    return 2;\n  }\n}\nfunction helperA() {\n  return 1;\n}\nfunction deadFn() {\n  return 3;\n}\n")
+w("y1/src/main.c", "int main(void) {\n    return 0;\n}\n")
 # T1: a test twin (tier=) and a def called from four files (by_total=)
 # H2/N3: a C header carries no next= (its prototypes' callers bind to the definitions); a path naming a prose file is no page
 w("d7/docs/guide.md", "# Guide\n\n## Install\n\ntext\n")
@@ -292,6 +299,14 @@ if [ "$pa" -gt 0 ] && [ "$pa" -le 16640 ] && [ "$pb" -gt 0 ] && [ "$pb" -le 1664
    && has "$T/m3b.xml" '<named-cut total="2" shown="1" bytes_capped="1"/>'; then
     ok "M3 the page stops at its 16 KB bound at a file boundary and says so (one dir $pa B, two dirs $pb B)"
 else no "M3 byte bound: one dir $pa B, two dirs $pb B, or no bytes_capped disclosure"; fi
+
+# ── Y1..Y4: the second fix round (delta review X1..X4) ─────────────────────────────────────────────────────────────────────────
+run y1 --for=app.js > "$T/y1.xml"
+nxy1="$( nextof "$T/y1.xml" web/app.js )"
+replay y1 "$nxy1" > "$T/y1q.xml"; rc=$?
+if [ -n "$nxy1" ] && [ "$rc" -eq 0 ] && has "$T/y1q.xml" 'n="orphanMethod"' && has "$T/y1q.xml" 'n="deadFn"'; then
+    ok "Y1 next= lists an uncalled METHOD (orphanMethod) beside the free functions it already listed"
+else no "Y1 next= replay rc=$rc: orphanMethod (kind=method) missing from the file's unreached defs ($nxy1)"; fi
 
 # ── M4: a minified file with no top-level row is not an empty page ──────────────────────────────────────────────────────────────
 run m4 --for=mini.js > "$T/m4.xml"

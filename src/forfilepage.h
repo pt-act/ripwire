@@ -549,7 +549,7 @@ inline void renderOneFile( std::string& out, const IngestResult& ing, const Grap
     const std::string re = pathRegexOf( rel );
     // main's closure, and — a script's work is its top-level code — the file's own <file-scope> row's: what either reaches is not listed
     const std::string mainNext = withMainNext && hasFn && !isHeader
-        ? nextFlag( "--graph-query=", "not(and(file(all,\"" + re + "\"),kind(all,fn)),callees(or(name(\"main\"),and(file(all,\"" + re
+        ? nextFlag( "--graph-query=", "not(and(file(all,\"" + re + "\"),or(kind(all,fn),kind(all,method))),callees(or(name(\"main\"),and(file(all,\"" + re
                                       + "\"),kind(all,modscope))),"
                                       + std::to_string( kForFilePageNextDepth ) + "))" )
         : std::string();
