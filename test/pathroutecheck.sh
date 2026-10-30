@@ -9,7 +9,8 @@
 # THE CONTRACT (one predicate, both transports):
 #   >= 2 by-name hops and a proven-only chain exists  -> the proven chain prints, route_hedged="proven-preferred"
 #   >= 2 by-name hops, no proven chain                -> printed, route_hedged="name-stitched" route_by_name= route_cands=
-#   >= 4 by-name hops, no proven chain                -> printed hedged, a next= to verify it (from='s callees, else the hop body) (unlikely)
+#   >= 4 by-name hops, no proven chain                -> printed, route_hedged="unlikely" (the verdict rides the root, not only the legend),
+#                                                        a next= to verify it (from's callees, else the hop body)
 #   >= 4 by-name hops, route_cands >= 64, no proven   -> refused: reachable="0" hops="0" route_hedged="not-proven", no hop rows,
 #                                                        next="--callees=<from>" (shell-safe: a path with a space is quoted)
 #   0..1 by-name hop                                  -> unchanged (no route_hedged=)
@@ -26,7 +27,7 @@
 #   (P) proven-preferred: a 3-hop by-name shortcut beside a 6-hop proven chain: the proven chain prints, no via=name row.
 #   (H) hedge: two by-name hops (cands 2): printed whole, route_hedged="name-stitched" route_by_name="2".
 #   (N1) near miss: one by-name hop among proven ones: no route_hedged=.
-#   (N2) near miss: four by-name hops each with ONE candidate (cands=1): hedged, never refused.
+#   (N2) near miss: four by-name hops each with ONE candidate (cands=1): route_hedged="unlikely", printed, never refused.
 #   (N3) near miss: three by-name hops with cands=2 each (the LARGE-DEV cpython-02 shape, a TRUE chain): hedged, never refused.
 #   (N4) a TRUE 4-hop TypeScript dependency-injection chain (interface-typed fields, one production decorator: route_cands 2): hedged, printed.
 #   (N5) the same chain in Go (a production implementor and a fake per interface: route_cands 16): hedged, printed.
@@ -317,8 +318,8 @@ N1="$( run n1 --path=start_entry,leaf )"
 if [ "$( attr reachable <<<"$N1" )" = 1 ] && [ "$( attr route_hedged <<<"$N1" )" = - ]; then ok "(N1) one by-name hop: no route_hedged="; else no "(N1) $( grep -o '<path [^>]*>' <<<"$N1" )"; fi
 # (N2)
 N2="$( run n2 --path=start_entry,Delta.u4 )"
-if [ "$( attr reachable <<<"$N2" )" = 1 ] && [ "$( attr route_cands <<<"$N2" )" = 1 ] && [ "$( attr route_hedged <<<"$N2" )" = name-stitched ]; then
-    ok "(N2) four by-name hops with one candidate each: hedged, never refused"
+if [ "$( attr reachable <<<"$N2" )" = 1 ] && [ "$( attr route_cands <<<"$N2" )" = 1 ] && [ "$( attr route_hedged <<<"$N2" )" = unlikely ] && [ "$( attr route_by_name <<<"$N2" )" = 4 ]; then
+    ok "(N2) four by-name hops with one candidate each: route_hedged=unlikely, printed, never refused"
 else
     no "(N2) $( grep -o '<path [^>]*>' <<<"$N2" )"
 fi
@@ -337,7 +338,7 @@ else
     no "(B64) $( grep -o '<path [^>]*>' <<<"$B64" )"
 fi
 B63="$( run b63 --path=start_entry,Sink.sink_call )"
-if [ "$( attr route_cands <<<"$B63" )" = 63 ] && [ "$( attr route_hedged <<<"$B63" )" = name-stitched ] && [ "$( attr reachable <<<"$B63" )" = 1 ] \
+if [ "$( attr route_cands <<<"$B63" )" = 63 ] && [ "$( attr route_hedged <<<"$B63" )" = unlikely ] && [ "$( attr reachable <<<"$B63" )" = 1 ] \
    && [ "$( rows <<<"$B63" | wc -w | tr -d ' ' )" = 5 ] && [ "$( attr next <<<"$B63" )" != - ]; then
     ok "(B63) route_cands 63 with 4 by-name hops is hedged and printed whole (5 rows), with a next= to verify it"
 else
@@ -345,14 +346,14 @@ else
 fi
 # (N4) / (N5) a true DI chain through interfaces: hedged and printed, never refused
 N4="$( run n4 --path=App.serve,Conn.execute )"
-if [ "$( attr reachable <<<"$N4" )" = 1 ] && [ "$( attr route_by_name <<<"$N4" )" = 4 ] && [ "$( attr route_hedged <<<"$N4" )" = name-stitched ] \
+if [ "$( attr reachable <<<"$N4" )" = 1 ] && [ "$( attr route_by_name <<<"$N4" )" = 4 ] && [ "$( attr route_hedged <<<"$N4" )" = unlikely ] \
    && [ "$( rows <<<"$N4" | wc -w | tr -d ' ' )" = 5 ]; then
     ok "(N4) a true 4-hop TypeScript DI chain (route_cands $( attr route_cands <<<"$N4" )) is hedged and printed whole, never refused"
 else
     no "(N4) $( grep -o '<path [^>]*>' <<<"$N4" ) rows=[$( rows <<<"$N4" )]"
 fi
 N5="$( run n5 --path=App.Serve,Conn.Execute )"
-if [ "$( attr reachable <<<"$N5" )" = 1 ] && [ "$( attr route_by_name <<<"$N5" )" = 4 ] && [ "$( attr route_hedged <<<"$N5" )" = name-stitched ] \
+if [ "$( attr reachable <<<"$N5" )" = 1 ] && [ "$( attr route_by_name <<<"$N5" )" = 4 ] && [ "$( attr route_hedged <<<"$N5" )" = unlikely ] \
    && [ "$( rows <<<"$N5" | wc -w | tr -d ' ' )" = 5 ]; then
     ok "(N5) a true 4-hop Go DI chain (route_cands $( attr route_cands <<<"$N5" )) is hedged and printed whole, never refused"
 else
@@ -361,7 +362,7 @@ fi
 # (N6) five by-name hops, one candidate each
 N6="$( run n6 --path=Pump.prevent,Clamp.step_d )"
 if [ "$( attr reachable <<<"$N6" )" = 1 ] && [ "$( attr route_by_name <<<"$N6" )" = 5 ] && [ "$( attr route_cands <<<"$N6" )" = 1 ] \
-   && [ "$( attr route_hedged <<<"$N6" )" = name-stitched ]; then
+   && [ "$( attr route_hedged <<<"$N6" )" = unlikely ]; then
     ok "(N6) five by-name hops with one candidate each: hedged and printed, never refused"
 else
     no "(N6) $( grep -o '<path [^>]*>' <<<"$N6" )"
@@ -377,15 +378,16 @@ for a in B63 N4 N6; do
     cmp="$( ulegend compact "$a" )"
     nx="$( attr next <<<"$full" )"
     if grep -q 'UNLIKELY' <<<"$full" && grep -q 'builtin and external receivers are not counted, so a low count is no proof' <<<"$full" \
-       && grep -q 'builtin and external receivers are not counted, so a low count is no proof' <<<"$cmp" && [ "$nx" != - ]; then
-        ok "(U) $a: the >= 4-hop hedge says unlikely, says route_cands counts in-repo definitions only, and carries a next="
+       && grep -q 'builtin and external receivers are not counted, so a low count is no proof' <<<"$cmp" && [ "$nx" != - ] \
+       && [ "$( attr route_hedged <<<"$full" )" = unlikely ] && grep -q 'route_hedged=unlikely' <<<"$full" && grep -q '=unlikely' <<<"$cmp"; then
+        ok "(U) $a: the >= 4-hop hedge is route_hedged=unlikely on the root, both legends define it, says route_cands counts in-repo definitions only, and carries a next="
     else
         no "(U) $a: next=[$nx] unlikely=$( grep -c UNLIKELY <<<"$full" ) fullclause=$( grep -c 'a low count is no proof' <<<"$full" ) compactclause=$( grep -c 'a low count is no proof' <<<"$cmp" )"
     fi
 done
 # with the hop-body next= off (RIPWIRE_NO_HOP_BODY) the root has no other next=, so a >= 4-hop hedge names from='s callees (shell-safe)
 U2="$( RIPWIRE_NO_HOP_BODY=1 run b63 --path=start_entry,Sink.sink_call )"
-if [ "$( attr route_hedged <<<"$U2" )" = name-stitched ] && [ "$( attr next <<<"$U2" )" = "--callees=m.py:start_entry" ]; then
+if [ "$( attr route_hedged <<<"$U2" )" = unlikely ] && [ "$( attr next <<<"$U2" )" = "--callees=m.py:start_entry" ]; then
     ok "(U) B63 without the hop-body next=: the >= 4-hop hedge names from='s callees"
 else
     no "(U) B63 no-hop-body: $( grep -o '<path [^>]*>' <<<"$U2" )"
@@ -405,7 +407,7 @@ else
 fi
 # (PM) a pairs answer: two start_entry definitions
 PM="$( run pm --path=start_entry,Sink.sink_call )"
-if [ "$( attr pairs_reaching <<<"$PM" )" != - ] && [ "$( attr reachable <<<"$PM" )" = 1 ] && [ "$( attr route_hedged <<<"$PM" )" = name-stitched ] \
+if [ "$( attr pairs_reaching <<<"$PM" )" != - ] && [ "$( attr reachable <<<"$PM" )" = 1 ] && [ "$( attr route_hedged <<<"$PM" )" = unlikely ] \
    && [ "$( attr route_by_name <<<"$PM" )" = 4 ] && [ "$( attr route_cands <<<"$PM" )" = 81 ]; then
     ok "(PM) a pairs answer carries the hedge on its first pair's chain (route_by_name=4 route_cands=81), never refused"
 else

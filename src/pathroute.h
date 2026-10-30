@@ -24,7 +24,7 @@
 // through interfaces with two implementors per hop is route_cands 2), so a 4-hop chain is refused only from kPathRouteRefuseCandsThreshold up):
 //   * fewer than kPathRouteHedgeNameHops by-name hops: printed as before (each hop's via="name" row is its own hedge);
 //   * kPathRouteHedgeNameHops or more: printed, HEDGED on the root (route_hedged="name-stitched" route_by_name= route_cands=); from
-//     kPathRouteRefuseNameHops the hedge says the chain is unlikely and next= follows from='s callees to verify it;
+//     kPathRouteRefuseNameHops the root says route_hedged="unlikely" (the chain is probably not the real route, on the answer itself) and next= follows from='s callees to verify it;
 //   * kPathRouteRefuseNameHops or more AND route_cands >= kPathRouteRefuseCandsThreshold: REFUSED as the answer — the chain's rows
 //     are not printed (no wrong-branch hop rides in a route), the root says reachable="0" route_hedged="not-proven" (NOT "no path":
 //     the search found one, nothing proves it) and next= follows from='s callees.
@@ -142,7 +142,7 @@ inline std::string pathRouteRootAttrs( const IngestResult& ing, const PathRouteV
     {
         return {};
     }
-    std::string out = v.refused ? " route_hedged=\"not-proven\" route_len=\"" + std::to_string( v.hops ) + "\"" : std::string( " route_hedged=\"name-stitched\"" );
+    std::string out = v.refused ? " route_hedged=\"not-proven\" route_len=\"" + std::to_string( v.hops ) + "\"" : std::string( v.byName >= kPathRouteRefuseNameHops ? " route_hedged=\"unlikely\"" : " route_hedged=\"name-stitched\"" );
     out += " route_by_name=\"" + std::to_string( v.byName ) + "\" route_cands=\"" + std::to_string( v.cands ) + "\"" + ( v.cands >= kPathRouteCandsCeiling ? " route_cands_capped=\"1\"" : "" );
     if( ( v.refused || v.byName >= kPathRouteRefuseNameHops ) && !hasNext && from < ing.symbols.size() )
     {
@@ -169,7 +169,7 @@ inline std::string_view pathRouteLegend( const PathRouteVerdict& v ) noexcept
     }
     if( v.hedged && v.byName >= kPathRouteRefuseNameHops )
     {
-        return "route_hedged=name-stitched route_by_name=K route_cands=P: K of the shown chain's hops are bound by name alone (the via=name "
+        return "route_hedged=unlikely route_by_name=K route_cands=P: K of the shown chain's hops are bound by name alone (the via=name "
                "rows; receiver unproven), standing for P same-named candidate chains (route_cands counts in-repo same-named definitions "
                "along the route; builtin and external receivers are not counted, so a low count is no proof; route_cands_capped=1: at least P): "
                "with 4 or more by-name hops this chain is UNLIKELY to be the real route, and the true route may be another; "
