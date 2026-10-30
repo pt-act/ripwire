@@ -4,6 +4,7 @@
 #endif
 
 #include "infra/emit.h" // rw::emitTo / emitRaw / formatTo — THE emitter and its siblings
+#include "forliteral.h" // MF1-LIT: a task naming a literal gets its byte-exact sites and owner bodies, appended
 #include "forpage.h"    // L-W: the --for --limit=N file page, coverage=, the thin rule and the widening next=
 #include "forowner.h"   // the question's owner (owner-hop's found set) and the one owner body of an explanatory question
 #include "forfold.h"    // body-fold: the whole bodies of the top ranked rows, appended to a compact-route answer
@@ -15,6 +16,7 @@
 #include "forcallerhop.h"   // mf1-nx: a name-exact answer about ONE function carries that function's callers
 #include "epmanifest.h"     // ep-manifest: the manifest entry-point groups that register a shown row
 #include "listedin.h"       // manifest-noncode: the build/package/registry manifest lines that list a shown file (creation tasks)
+#include "forreexport.h"    // ALIAS-IMPORT: the re-export hop rows of a definition the task names
 #include <algorithm>         // std::ranges::find: the ep manifest re-picked from the rows <sigs> emits
 #include <optional>          // the redaction-tally snapshots a degraded pre-render restores
 #include <string_view>       // %.*s (precision, pointer) collapses to one view
@@ -2706,6 +2708,25 @@ std::optional<int> runPathServed( const MainDispatch& d, std::span<const rw::Nod
 std::optional<int> runCallHierarchy( const MainDispatch& d );
 std::optional<int> runConnect( const MainDispatch& d );
 
+// MF1-LIT (src/forliteral.h): a task naming a literal (a quoted span or a CONST_SHAPED word) gets the literal's byte-exact sites
+// and their owner bodies inside <lit>, just before </ctx>, after every byte of the ordinary answer. `served` is the answer's own
+// body text: a body it already printed is not repeated. XML, the default regime and a single root only.
+inline void appendLiteralAnchorBlock( const MainDispatch& d, std::string_view rootArg, std::string_view served )
+{
+    const rw::Config& cfg = d.cfg;
+    if( cfg.json || cfg.columnar || cfg.candidates || d.multiRoot || cfg.tokenBudget > 0 || !rw::forLiteralOn() )
+    {
+        return;
+    }
+    const std::optional<rw::ForLiteral> lit = rw::forLiteralOf( cfg.forTask );
+    if( !lit )
+    {
+        return;
+    }
+    const rw::ForLiteralRender r = rw::renderForLiteral( d.ing, *lit, rootArg, served, d.redactPtr, /*useMemo=*/!cfg.noCache, /*compactLegend=*/cfg.legend == "compact" );
+    std::fwrite( r.xml.data(), 1, r.xml.size(), stdout );
+}
+
 // FOR-ROUTE-DECLINED (src/forgraphverb.h): a task spelled `path from A to B` / `callers of X` / `common callers of A and B`
 // gets that verb's DEFAULT answer inside <graph_verb endpoints="subject">, just before </ctx>, on the graph this run built
 // (no re-index). Every byte before it is the ordinary answer; nothing resolves → nothing is printed. XML only (the
@@ -4542,6 +4563,13 @@ std::optional<int> runForLensPass( const MainDispatch& d, rw::LensRanking lr, co
             rw::emitChargedSection( stdout, graphSection, [ & ]{ packGraphBlock( stdout, ing, lensRank, g.outOff, g.outTargets ); } );
         }
         appendSubjectGraphVerbBlock( d, servedAnswerBodies().bodies );   // FOR-ROUTE-DECLINED: "" unless the task is spelled as a graph question that resolves; the bodies this answer carries print no second copy in its path hop bodies
+        // ALIAS-IMPORT (forreexport.h): the `pub use` / `export … from` hops to a definition the task names; "" when none. XML only, like the block above.
+        if( !cfg.json && !cfg.columnar && !cfg.candidates && !d.multiRoot && rw::forReexportOn() )
+        {
+            const std::string reexports = rw::renderForReexports( ing, cfg.forTask, /*held=*/cfg.tokenBudget > 0 );   // CR pre-pass 42b: held under --token-budget
+            std::fwrite( reexports.data(), 1, reexports.size(), stdout );
+        }
+        appendLiteralAnchorBlock( d, flRootArg, detailSection.xml + autoSection.xml + slot.xml + fold.xml + callerHop.xml + dispatchHop.xml );   // MF1-LIT: "" unless the task names a literal with a site (dispatchHop: train 42b, its single-candidate <b>)
 
         rw::emitRaw( stdout, "</ctx>" );
         reportRedactions( stderr, redactCounts );

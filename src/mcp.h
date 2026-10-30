@@ -160,6 +160,12 @@ struct McpToolProfile
 };
 inline constexpr McpToolProfile kMcpToolProfiles[] = {
     { "core", "explore,batch,from_trace,impact,uses,fetch_body,edit_check,quality_delta" },
+    // `no-edit` = everything but the three span-addressed edit twins. What `ripwire wrap claude` registers: Claude Code
+    // refuses a native Edit on a file it has not Read, so the edit twins cannot spare it the Read, and in our own usage
+    // they were never called there (their schemas, about 4 KB of tools/list, were paid every session). Listed in full
+    // rather than derived, to stay a plain table row like `core`; mcpNoEditProfileIsAllButEditGroup below holds it to
+    // the table, so a tool added later cannot silently fall out of it.
+    { "no-edit", "analyze,rank_by,find_symbol,find_referencing_symbols,grep,cochange,memory_recall,situational_awareness,mentions,for,lego,owners,fetch_body,batch,exemplar,quality_delta,quality_baseline,impact,uses,affected,path_between,connect,explore,from_trace,edit_check,whereis,stray_content,flags,doc_drift,slice" },
     { "full", "" },
 };
 
@@ -204,6 +210,25 @@ consteval bool mcpProfilesNameOnlyTools() noexcept
 }
 static_assert( mcpProfilesNameOnlyTools(),
                "a kMcpToolProfiles row names a tool kMcpVerbTable does not have, names one twice, or a profile is named like a tool" );
+
+// `no-edit` is exactly the tools outside McpVerbGroup::Edit: a new read or reflex verb must join it, a new edit verb must not.
+consteval bool mcpNoEditProfileIsAllButEditGroup() noexcept
+{
+    McpToolMask notEdit = 0;
+    for( std::size_t toolIndex = 0; toolIndex < kMcpVerbCount; ++toolIndex )
+    {
+        notEdit |= kMcpVerbTable[ toolIndex ].group == McpVerbGroup::Edit ? McpToolMask{ 0 } : McpToolMask{ 1 } << toolIndex;
+    }
+    for( const McpToolProfile& profile : kMcpToolProfiles )
+    {
+        if( profile.name == "no-edit" )
+        {
+            return mcpProfileMask( profile.members ) == notEdit;
+        }
+    }
+    return false;
+}
+static_assert( mcpNoEditProfileIsAllButEditGroup(), "the no-edit profile drifted from 'every tool outside McpVerbGroup::Edit' — add the new tool to its members" );
 
 // The @FILE:LINE line-seed sentence, SPLICED into every stanza whose selector resolves it (the
 // kExemplarSelectionRule pattern: one constant, nine descriptions, zero drift). This is the no-name
@@ -353,7 +378,7 @@ inline std::string mcpBatchServedVerbsList( bool gitVerbsOmitted )
     return out;
 }
 
-// "core, full (profiles); analyze, rank_by, … (tools)" — every name --mcp-tools accepts, in table order, for the
+// "core, no-edit, full (profiles); analyze, rank_by, … (tools)" — every name --mcp-tools accepts, in table order, for the
 // refusal that has to say what WOULD have been accepted.
 inline std::string mcpToolSpecNames()
 {

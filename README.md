@@ -2139,9 +2139,9 @@ wrong, and it has. These are the results that say so, all in-tree, all published
 ### In the tests
 
 <details>
-<summary><b>732 gate scripts</b>, five contracts no unit test can hold, and the house rule: write the gate before the code it measures</summary> <!-- gatecount -->
+<summary><b>735 gate scripts</b>, five contracts no unit test can hold, and the house rule: write the gate before the code it measures</summary> <!-- gatecount -->
 
-`test/regression.sh` names **732 gate scripts** and is the authoritative list; <!-- gatecount -->
+`test/regression.sh` names **735 gate scripts** and is the authoritative list; <!-- gatecount -->
 `python3 test/pargates.py . ./build/ripwire -j 6` runs the same set in parallel. On top of them sit the
 contracts that do not fit a unit test: two runs byte-identical, warm output identical to cold, output
 that pipes clean through `xmllint --noout`, a sanitizer build with `-fno-sanitize-recover=all`, and a
@@ -2645,7 +2645,9 @@ profile (explore, batch, from_trace, impact, uses, fetch_body, edit_check, quali
 instructions teach). A client that loads every tool schema at session start then pays for 8 schemas instead of 33
 (`tools/list` measured at 13,834 bytes instead of 46,368). A call to a tool that is not listed is refused with the
 flag that enables it. The list is not access control: `batch` sub-queries still reach hidden verbs. `ripwire wrap AGENT --mcp-tools=core` writes the flag
-into the recipe it prints. The default stays the full catalog.
+into the recipe it prints. The default stays the full catalog, except in `ripwire wrap claude`'s recipe, which passes
+`--mcp-tools=no-edit` (every tool but the three edit twins: Claude Code must Read before it edits, so it takes a symbol's
+line range from ripwire, Reads that range, and uses its native Edit; `--mcp-tools=full` restores them).
 
 For a socket instead of standard input and output, run `ripwire --listen=HOST:PORT`. A non-loopback
 bind requires `--mcp-token`. The three edit verbs are disabled on a remote bind unless you pass
@@ -2897,7 +2899,7 @@ python3 test/pargates.py . ./build/ripwire -j 6
 A new gate script must be added to `test/regression.sh` in the same change. The gate
 `test/manifestcheck.sh` enforces this rule.
 
-Another gate derives the cap inventory. The tool has 301 compile-time caps and 7 ranking parameters.
+Another gate derives the cap inventory. The tool has 312 compile-time caps and 7 ranking parameters.
 `docs/LIMITS.md` lists each cap, its value, and whether the file discloses a truncation when the cap
 fires, and `python3 docs/limits_build.py --check` proves that list against `src/`. `docs/TUNING.md`
 lists the measured cost of each cap.
