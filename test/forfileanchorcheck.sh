@@ -34,6 +34,17 @@
 #   K2 [P] the anchor cap discloses: a subject naming three files pages two and says <named-cut total="3" shown="2"/>
 #   K1 [P] the top-level cap discloses: a 120-line script shows at most 40 lines and <top_cut … rest=>
 #   N1 [G] no page with RIPWIRE_NO_FILE_PAGE=1, nor under --json
+#   D2..D5 [P] (lens F1) a slash token that names a DIRECTORY is read on the FULL path before any shorter suffix: `pkg/foo` beside an
+#          unrelated internal/foo.go -> named-dir (D2), the Go convention pkg/foo/foo.go -> named-dir holding encode.go (D3),
+#          `src/helper/cookie` beside src/utils/cookie.ts -> named-dir, first <d> row in src/helper/cookie/ (D4), `lib/a.c` with only a
+#          root a.c -> a near="1" listing, no page (D5); a file AND a directory both answering (src/utils.ts + src/utils/) -> listed, none picked (D6)
+#   M1 [P] (primary C1) next= is built by nextFlag: pasted through `sh -n`, then replayed through shlex, it parses and runs
+#   M2 [P] (primary C2) a script's page does not list the defs the script's OWN top level calls as "main does not reach"; the 16-call
+#          walk cap is said in both dialects
+#   M3 [P] (primary C3) the page has one 16 KB bound: a 7-file directory and two directories stop at a file boundary, bytes_capped=1
+#   M4 [P] (primary N2) a minified one-line file with no <file-scope> row says top_cut shown=0, never an empty page
+#   K3-K5 [P] (primary N1) the def-row cap (41 defs), the dir-file cap (7 files) and the list cap (9 same-named files) are disclosed
+#   T1 [P] (primary N1) tier="test" on a listed file; by_total= beside by=
 #   L1 [P] the clause rides in both dialects and defines every attribute the page elements carry (whole-name search in the clause)
 #   X1 [G] determinism  X2 [G] xmllint well-formed (when xmllint exists)  X3 [G] no "--" inside the legend comment
 #
@@ -102,6 +113,39 @@ w("c/src/main.c", "#include \"widget.h\"\nint main(void) {\n    return widget_ar
 w("ts2/src/location.ts", "export class Location {\n  go(path: string): void {\n    history.pushState(null, '', path);\n  }\n}\n")
 for n in ("alpha", "beta", "gamma"):
     w("multi/%s_tool.py" % n, "def %s_run():\n    return 1\n" % n)
+# lens F1 / primary C1-C3 fixtures
+w("d2/pkg/foo/encode.go", "package foo\n\nfunc Encode() int {\n\treturn 1\n}\n")
+w("d2/pkg/foo/decode.go", "package foo\n\nfunc Decode() int {\n\treturn 2\n}\n")
+w("d2/internal/foo.go", "package internal\n\nfunc LegacyFooShim() int {\n\treturn 3\n}\n")
+w("d3/pkg/foo/foo.go", "package foo\n\nvar Version = 1\n")
+w("d3/pkg/foo/encode.go", "package foo\n\nfunc Encode() int {\n\treturn 1\n}\n")
+w("d3/pkg/foo/decode.go", "package foo\n\nfunc Decode() int {\n\treturn 2\n}\n")
+w("d4/src/helper/cookie/index.ts", "export function setCookie(n: string): string {\n  return n\n}\nexport function deleteCookie(n: string): string {\n  return n\n}\n")
+w("d4/src/utils/cookie.ts", "export function parse(s: string): string {\n  return s\n}\nexport function serialize(s: string): string {\n  return s\n}\n")
+w("d5/a.c", "int a_add(int x) {\n    return x + 1;\n}\n")
+w("d6/src/utils.ts", "export function one(): number {\n  return 1\n}\n")
+w("d6/src/utils/index.ts", "export function two(): number {\n  return 2\n}\n")
+# M2: a script whose top level calls emit, beside a C main
+w("m2/scripts/run.sh", "#!/usr/bin/env bash\nset -eu\nemit() {\n  echo \"$1\"\n}\nunused_one() {\n  echo x\n}\nemit \"hi\"\n")
+w("m2/src/main.c", "int helper(void) {\n    return 1;\n}\nint main(void) {\n    return helper();\n}\n")
+# M3: seven files of sixty long-signature defs in two sibling directories
+for d in ("big", "big2"):
+    for f in range(1, 8):
+        w("m3/pkg/%s/f%d.py" % (d, f), "".join("def %s_f%d_op%02d(first_argument, second_argument, third_argument, fourth_argument, fifth_argument, sixth_argument):\n    return first_argument\n\n" % (d, f, i) for i in range(60)))
+# M4: a minified bundle: one long line of assignments, no call, no def
+w("m4/src/mini.js", "var a=1;" + "".join("var v%d=%d;" % (i, i) for i in range(1500)) + "\n")
+w("m4/src/other.js", "function other() {\n  return 1;\n}\n")
+# K3: 41 defs; K4: a 7-file directory; K5: nine files of one name
+w("k3/lib/many_defs.py", "".join("def op%02d():\n    return %d\n\n" % (i, i) for i in range(41)))
+for f in range(1, 8):
+    w("k4/pkg/seven/f%d.py" % f, "def seven_f%d():\n    return %d\n" % (f, f))
+for d in range(1, 10):
+    w("k5/pkg%d/dup.py" % d, "def dup_%d():\n    return %d\n" % (d, d))
+# T1: a test twin (tier=) and a def called from four files (by_total=)
+w("t1/pkg/core.py", "def shared():\n    return 1\n")
+w("t1/tests/core.py", "def test_shared():\n    return 1\n")
+for i in range(1, 5):
+    w("t1/use/a%d.py" % i, "from pkg.core import shared\n\ndef call_%d():\n    return shared()\n" % i)
 # K1: a long script
 w("long/run-deploy.sh", "#!/bin/sh\n" + "".join('echo "step %d"\n' % i for i in range(120)))
 PY
@@ -164,6 +208,97 @@ if has "$T/d1.xml" '<named-dir p="cmd/syncledger" files="1">' && has "$T/d1.xml"
     ok "D1 directory anchor: named-dir with main.go's page"
 else no "D1 directory anchor cmd/syncledger: no named-dir page"; fi
 
+# ── D2..D6: a path token names a directory (lens F1) ───────────────────────────────────────────────────────────────────────────
+run d2 --for=pkg/foo > "$T/d2.xml"
+if has "$T/d2.xml" '<named-dir p="pkg/foo" files="2"' && ! has "$T/d2.xml" '<named-file p="internal/foo.go"'; then
+    ok "D2 pkg/foo is the directory, not the unrelated internal/foo.go"
+else no "D2 pkg/foo beside internal/foo.go: no named-dir, or the same-stem file was paged"; fi
+run d3 --for=pkg/foo > "$T/d3.xml"
+if has "$T/d3.xml" '<named-dir p="pkg/foo" files="3"' && has "$T/d3.xml" '<named-file p="pkg/foo/encode.go"' && ! has "$T/d3.xml" '<named-file p="pkg/foo/foo.go" lines="3" defs="1" next'; then
+    ok "D3 the Go convention pkg/foo/foo.go: the directory, with encode.go inside it"
+else no "D3 pkg/foo (Go convention): no named-dir holding encode.go"; fi
+run d4 --for=src/helper/cookie > "$T/d4.xml"
+first4="$( python3 - "$T/d4.xml" <<'PY'
+import re, sys
+m = re.search(r'<d [^>]*?p="([^"]*)"', open(sys.argv[1]).read())
+print(m.group(1) if m else "-")
+PY
+)"
+if has "$T/d4.xml" '<named-dir p="src/helper/cookie"' && ! has "$T/d4.xml" 'src/utils/cookie.ts" lines' && case "$first4" in src/helper/cookie/*) true ;; *) false ;; esac; then
+    ok "D4 src/helper/cookie is the directory; the first ranked row is in it ($first4)"
+else no "D4 src/helper/cookie: no named-dir, a same-stem file was paged, or the first row is $first4"; fi
+run d5 --for=lib/a.c > "$T/d5.xml"
+if ! has "$T/d5.xml" '<named-file p="a.c"' && has "$T/d5.xml" '<named-files n="lib/a.c" total="1" near="1">' && ! has "$T/d5.xml" 'file subject:'; then
+    ok "D5 lib/a.c with only a root a.c: a near listing, no page, no lift"
+else no "D5 lib/a.c: a shorter-suffix file was paged or lifted"; fi
+run d6 --for=src/utils > "$T/d6.xml"
+if has "$T/d6.xml" '<f p="src/utils.ts"' && has "$T/d6.xml" '<f p="src/utils/" dir="1" files="1"/>' && ! has "$T/d6.xml" '<named-file ' && ! has "$T/d6.xml" 'file subject:'; then
+    ok "D6 a file AND a directory answer to src/utils: both listed, none picked, no lift"
+else no "D6 src/utils (file + directory): not both listed, or one was picked"; fi
+
+# ── M1/M2: next= is a shell-safe flag, and a script's own top level is a root ───────────────────────────────────────────────────
+run c --for=widget.c > "$T/m1.xml"
+run m2 --for=run.sh > "$T/m2.xml"
+nextof(){ python3 - "$1" "$2" <<'PY'
+import html, re, sys
+s = open(sys.argv[1]).read()
+m = re.search(r'<named-file p="[^"]*' + re.escape(sys.argv[2]) + r'"[^>]*? next="([^"]*)"', s)
+print(html.unescape(m.group(1)) if m else "")
+PY
+}
+nx1="$( nextof "$T/m1.xml" widget.c )"
+if [ -n "$nx1" ] && printf 'ripwire . %s\n' "$nx1" | sh -n 2>/dev/null; then ok "M1 next= pastes through sh -n"
+else no "M1 next= is empty or does not parse as a shell line: $nx1"; fi
+nx2="$( nextof "$T/m2.xml" run.sh )"
+replay(){ python3 - "$BIN" "$T/$1" "$2" <<'PY'
+import shlex, subprocess, sys
+bin_, root, nx = sys.argv[1:4]
+r = subprocess.run([bin_, root, "--no-cache"] + shlex.split(nx), stdin=subprocess.DEVNULL, capture_output=True, text=True, cwd=root)
+sys.stdout.write(r.stdout); sys.exit(r.returncode)
+PY
+}
+replay m2 "$nx2" > "$T/m2q.xml"; rc=$?
+if [ -n "$nx2" ] && [ "$rc" -eq 0 ] && has "$T/m2q.xml" 'n="unused_one"' && ! grep -qE '<[a-z]+ [^>]*n="emit"' "$T/m2q.xml"; then
+    ok "M1/M2 next= replays through shlex; it lists unused_one and not emit (the script's own top level calls emit)"
+else no "M1/M2 next= replay rc=$rc: unused_one missing or emit listed as unreached ($nx2)"; fi
+run m2 --for=run.sh --legend=full > "$T/m2f.xml"; run m2 --for=run.sh --legend=compact > "$T/m2c.xml"
+if has "$T/m2f.xml" 'within 16 calls' && has "$T/m2f.xml" 'walk cap' && has "$T/m2c.xml" 'within 16 calls'; then ok "M2 the 16-call walk cap is said, full and compact"
+else no "M2 the legend states reachability without its 16-call cap"; fi
+
+# ── M3: one byte bound on the page ──────────────────────────────────────────────────────────────────────────────────────────────
+pagebytes(){ python3 - "$1" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read()
+a = s.find("<named-"); b = max(s.rfind("</named-"), s.rfind("<named-cut"))
+e = s.find(">", b) + 1
+print(e - a if a >= 0 and b >= 0 else 0)
+PY
+}
+run m3 --for="pkg/big package" > "$T/m3a.xml"
+run m3 --for="pkg/big pkg/big2" > "$T/m3b.xml"
+pa="$( pagebytes "$T/m3a.xml" )"; pb="$( pagebytes "$T/m3b.xml" )"
+if [ "$pa" -gt 0 ] && [ "$pa" -le 16640 ] && [ "$pb" -gt 0 ] && [ "$pb" -le 16640 ] && grep -qE '<named-dir p="pkg/big" files="7" shown="[0-9]+" capped="1" bytes_capped="1">' "$T/m3a.xml" \
+   && has "$T/m3b.xml" '<named-cut total="2" shown="1" bytes_capped="1"/>'; then
+    ok "M3 the page stops at its 16 KB bound at a file boundary and says so (one dir $pa B, two dirs $pb B)"
+else no "M3 byte bound: one dir $pa B, two dirs $pb B, or no bytes_capped disclosure"; fi
+
+# ── M4: a minified file with no top-level row is not an empty page ──────────────────────────────────────────────────────────────
+run m4 --for=mini.js > "$T/m4.xml"
+if grep -qE '<named-file p="src/mini.js" lines="1" defs="0"[^>]*><top_cut top_lines="1" shown="0" rest="1-1"/></named-file>' "$T/m4.xml"; then
+    ok "M4 mini.js: top_cut says its one line was not served"
+else no "M4 mini.js: an empty page with no disclosure"; fi
+
+# ── K3..K5, T1: the remaining caps and attributes ───────────────────────────────────────────────────────────────────────────────
+run k3 --for=many_defs.py > "$T/k3.xml"
+if has "$T/k3.xml" 'defs="41" shown="40" capped="1"'; then ok "K3 the def-row cap discloses (41 defs, 40 shown)"; else no "K3 def-row cap not disclosed"; fi
+run k4 --for="pkg/seven package" > "$T/k4.xml"
+if has "$T/k4.xml" '<named-dir p="pkg/seven" files="7" shown="6" capped="1">'; then ok "K4 the dir-file cap discloses (7 files, 6 paged)"; else no "K4 dir-file cap not disclosed"; fi
+run k5 --for=dup.py > "$T/k5.xml"
+if has "$T/k5.xml" '<named-files n="dup.py" total="9" shown="8" capped="1">'; then ok "K5 the list cap discloses (9 files, 8 listed)"; else no "K5 list cap not disclosed"; fi
+run t1 --for=core.py > "$T/t1a.xml"; run t1 --for=pkg/core.py > "$T/t1b.xml"
+if has "$T/t1a.xml" '<f p="tests/core.py" defs="1" tier="test"/>' && has "$T/t1b.xml" 'by_total="4"'; then ok "T1 tier=test on a listed file; by_total= beside by="
+else no "T1 tier= or by_total= missing"; fi
+
 # ── E: near misses that must NOT serve a page ───────────────────────────────────────────────────────────────────────────────
 run py --for="where STATE used in sync_ledger.py is defined" > "$T/e1.xml"
 if ! has "$T/e1.xml" '<named-file'; then ok "E1 a file named as context carries no page"
@@ -216,7 +351,9 @@ else no "N1 a page rode under the kill switch or --json"; fi
 run py --for=sync_ledger --legend=full > "$T/l1.xml"
 run long --for=run-deploy.sh --legend=full > "$T/l1k.xml"   # the full dialect on a cut page (top_cut) — each dialect, each element
 run py --for=util.py --legend=full > "$T/l1c.xml"
-for f in "$T/b1.xml" "$T/l1.xml" "$T/c1.xml" "$T/d1.xml" "$T/k1.xml" "$T/k2.xml" "$T/l1k.xml" "$T/l1c.xml"; do
+run d5 --for=lib/a.c --legend=full > "$T/l1d5.xml"; run d6 --for=src/utils --legend=compact > "$T/l1d6.xml"
+run m3 --for="pkg/big pkg/big2" --legend=full > "$T/l1m3.xml"; run m4 --for=mini.js --legend=full > "$T/l1m4.xml"
+for f in "$T/b1.xml" "$T/l1.xml" "$T/c1.xml" "$T/d1.xml" "$T/k1.xml" "$T/k2.xml" "$T/l1k.xml" "$T/l1c.xml" "$T/l1d5.xml" "$T/l1d6.xml" "$T/l1m3.xml" "$T/l1m4.xml" "$T/m3a.xml"; do
     if python3 - "$f" <<'PY'
 import re, sys
 s = open(sys.argv[1]).read()
@@ -227,7 +364,7 @@ a, b = s.find("<named-"), s.rfind("</named-")
 if a < 0 or b < 0: print("    no page in", sys.argv[1]); sys.exit(1)
 page = re.sub(r"<!\[CDATA\[.*?\]\]>", "", s[a:b], flags=re.S)
 miss = set()
-for el in re.findall(r"<(named-file|named-files|named-dir|top_cut|top|s|f)\b([^>]*)>", page):
+for el in re.findall(r"<(named-file|named-files|named-dir|named-cut|top_cut|top|s|f)\b([^>]*)>", page):
     for a in re.findall(r" ([a-z_]+)=\"", el[1]):
         if not re.search(r"(?<![a-z_])" + a + r"=", clause): miss.add(el[0] + "." + a)
 if miss: print("    undefined:", sorted(miss)); sys.exit(1)

@@ -22,6 +22,7 @@
 #include "lexical.h"     // isRouteStopword, splitRouteWords — the ONE stopword list the route reads
 #include "mention.h"     // extractMentions, RawMention::whole, resolveStemFile, pathSuffixMatches, dirSuffixMatches
 #include "model.h"
+#include "nextverb.h"    // nextFlag — next= pastes into a shell
 #include "docparse.h"    // docparse::detail::readWholeFile
 #include "filter.h"      // isTestPath, isDemoOrGeneratedPath — the tier label on a listed file
 #include "resolve.h"     // trimWs — the one blank-trimmer
@@ -50,6 +51,8 @@ inline constexpr std::size_t kForFilePageTopLines    = 40;     // top-level line
 inline constexpr std::size_t kForFilePageTopBytes    = 2048;   // top-level bytes served per file
 inline constexpr std::size_t kForFilePageSigBytes    = 160;    // one def row's signature text
 inline constexpr std::size_t kForFilePageMaxAnchors  = 2;      // file tokens of one subject given a page
+inline constexpr std::size_t kForFilePageMaxBytes  = 16384;   // the whole page: no file or directory starts past it (the first always does)
+inline constexpr unsigned    kForFilePageNextDepth   = 16;      // calls the next= closure walks from main (said in the legend: a cap, not a fact)
 
 inline bool forFilePageOn()
 {
@@ -63,6 +66,12 @@ struct FileAnchor
     char                       kind  = 'b';
     std::vector<std::uint32_t> files;        // at most kForFilePageListFiles (a directory: its code files, at most that many)
     std::uint32_t              total = 0;    // every file it names
+    bool                       near  = false;   // a SHORTER path than the one written matched: listed, never picked
+    std::uint32_t              dirTotal = 0;    // the path also names a directory of this many code files (a file matched in full too)
+    std::string                dirPath;         // that directory, root-relative
+
+    // is the anchor exactly one file the subject named in full (page it, lift it)?
+    bool picksOne() const noexcept { return kind != 'd' && total == 1 && files.size() == 1 && !near && dirTotal == 0; }
 };
 
 namespace filepage
@@ -143,15 +152,32 @@ inline FileAnchor anchorOfMention( const IngestResult& ing, const mention_detail
         a.token += ( k ? "/" : "" ) + m.segments[k];
     }
     a.kind = 'p';
-    for( std::size_t suffixLen = m.segments.size(); suffixLen >= 1 && a.total == 0; --suffixLen )
+    const auto isCode = [ & ]( std::uint32_t f ) { return isListableCodeFile( ing.files[f] ); };
+    // the path as WRITTEN, whole: a file at its full length ...
+    collectFiles( ing, a, [ & ]( std::uint32_t f ) { return isCode( f ) && pathSuffixMatches( rootRelPath( ing, f ), m.segments ); } );
+    // ... and the directory it may name — read on the full path BEFORE any shorter suffix, so `src/helper/cookie` is never
+    // answered by an unrelated src/utils/cookie.ts that merely shares its last segment's stem
+    FileAnchor dir;
+    dir.kind  = 'd';
+    dir.token = a.token;
+    collectFiles( ing, dir, [ & ]( std::uint32_t f ) { return isCode( f ) && dirSuffixMatches( rootRelPath( ing, f ), m.segments ); } );
+    if( dir.total > 0 && a.total == 0 )
+    {
+        return dir;
+    }
+    if( dir.total > 0 )   // a file AND a directory answer to the written path: both said, none picked
+    {
+        const std::string_view first = rootRelPath( ing, dir.files.front() );
+        a.dirTotal = dir.total;
+        a.dirPath.assign( first.substr( 0, first.size() - baseNameOf( first ).size() - 1 ) );
+        return a;
+    }
+    // a SHORTER suffix is never a page: a file at a path the subject did not write is listed as near, picked by nobody
+    for( std::size_t suffixLen = m.segments.size() - 1; suffixLen >= 1 && a.total == 0; --suffixLen )
     {
         const std::vector<std::string> suffix( m.segments.end() - suffixLen, m.segments.end() );
-        collectFiles( ing, a, [ & ]( std::uint32_t f ) { return pathSuffixMatches( rootRelPath( ing, f ), suffix ); } );
-    }
-    if( a.total == 0 )
-    {
-        a.kind = 'd';
-        collectFiles( ing, a, [ & ]( std::uint32_t f ) { return isListableCodeFile( ing.files[f] ) && dirSuffixMatches( rootRelPath( ing, f ), m.segments ); } );
+        collectFiles( ing, a, [ & ]( std::uint32_t f ) { return isCode( f ) && pathSuffixMatches( rootRelPath( ing, f ), suffix ); } );
+        a.near = a.total > 0;
     }
     return a;
 }
@@ -267,14 +293,7 @@ inline CallerFacts callerFactsOf( const IngestResult& ing, const Graph& g, NodeI
             continue;
         }
         ++out.callers;
-        bool byName = false;
-        if( !g.outNameOnly.empty() && caller + 1 < g.outOff.size() )
-        {
-            const auto first = g.outTargets.begin() + g.outOff[caller];
-            const auto last  = g.outTargets.begin() + g.outOff[caller + 1];
-            const auto hit   = std::lower_bound( first, last, id );
-            byName = hit != last && *hit == id && g.outNameOnly[ std::size_t( hit - g.outTargets.begin() ) ] == 1;
-        }
+        const bool byName = edgeNameOnly( g, caller, id );
         anyPlain = anyPlain || !byName;
         const std::uint32_t cf = ing.symbols[caller].fileId;
         auto at = std::ranges::find_if( out.byFile, [ & ]( const auto& p ) { return p.second == cf; } );
@@ -524,7 +543,16 @@ inline void renderOneFile( std::string& out, const IngestResult& ing, const Grap
     bool                      modScope = false;
     const std::vector<NodeId> defs = fileDefsInLineOrder( ing, f, modScope );
     const bool hasFn = std::ranges::any_of( defs, [ & ]( NodeId id ) { return ing.symbols[id].kind == SymKind::Function || ing.symbols[id].kind == SymKind::Method; } );
-    const std::string mainNext = withMainNext && hasFn ? "--graph-query=not(file(all,\"" + pathRegexOf( rel ) + "\"),callees(name(\"main\"),16))" : std::string();
+    // a C/C++ header holds prototypes: their callers bind to the definitions, so "main does not reach" would be said of the wrong rows
+    const std::string_view ext = mention_detail::fileExtOf( rel );
+    const bool isHeader = ext == "h" || ext == "hpp" || ext == "hh";
+    const std::string re = pathRegexOf( rel );
+    // main's closure, and — a script's work is its top-level code — the file's own <file-scope> row's: what either reaches is not listed
+    const std::string mainNext = withMainNext && hasFn && !isHeader
+        ? nextFlag( "--graph-query=", "not(and(file(all,\"" + re + "\"),kind(all,fn)),callees(or(name(\"main\"),and(file(all,\"" + re
+                                      + "\"),kind(all,modscope))),"
+                                      + std::to_string( kForFilePageNextDepth ) + "))" )
+        : std::string();
     appendFileOpenTag( out, rel, t, defs.size(), mainNext, esc );
     for( std::size_t k = 0; k < defs.size() && k < kForFilePageDefRows; ++k )
     {
@@ -536,6 +564,10 @@ inline void renderOneFile( std::string& out, const IngestResult& ing, const Grap
     if( modScope && t.lineCount > 0 && coveredCount * 2 < t.lineCount )
     {
         appendTopLevel( out, t, covered, redact );
+    }
+    else if( !modScope && defs.empty() && t.lineCount > 0 )   // no def and no top-level row (a minified bundle): said, never an empty page
+    {
+        out += std::format( "<top_cut top_lines=\"{}\" shown=\"0\" rest=\"1-{}\"/>", t.lineCount, t.lineCount );
     }
     out += "</named-file>";
 }
@@ -553,61 +585,85 @@ inline std::string renderForFilePage( const IngestResult& ing, const Graph& g, s
     std::string       out;
     std::vector<char> esc;
     const bool        withMainNext = filepage::corpusHasMain( ing );
+    // the page has ONE byte bound (kForFilePageMaxBytes): a file or directory that would carry it past the bound is not started
+    // (the first always is), and the cut is said — bytes_capped=1 on the directory or on <named-cut>
+    const auto fits = [ & ]( std::size_t pending, std::size_t piece ) { return pending == 0 || pending + piece <= kForFilePageMaxBytes; };
+    std::size_t paged = 0;
+    bool        bytesCut = false;
     for( std::size_t ai = 0; ai < anchors.size() && ai < kForFilePageMaxAnchors; ++ai )
     {
         const FileAnchor& a = anchors[ai];
+        std::string       piece;
         if( a.kind == 'd' )
         {
             std::vector<std::uint32_t> files = a.files;   // non-test files first, then tests, path order within (fileId order)
             std::stable_partition( files.begin(), files.end(), [ & ]( std::uint32_t f ) { return !isTestPath( rootRelPath( ing, f ) ); } );
-            out += "<named-dir p=\"";
-            out += escapeXml( a.token, esc );
-            out += std::format( "\" files=\"{}\"", a.total );
-            const std::size_t shown = std::min( files.size(), kForFilePageDirFiles );
+            std::string       body;
+            std::size_t       shown = 0;
+            bool              dirCut = false;
+            const std::size_t room = std::min( files.size(), kForFilePageDirFiles );
+            for( ; shown < room; ++shown )
+            {
+                std::string one;
+                filepage::renderOneFile( one, ing, g, files[shown], redact, withMainNext, esc );
+                if( !fits( out.size() + body.size(), one.size() ) ) { dirCut = true; break; }
+                body += one;
+            }
+            if( shown == 0 && dirCut ) { bytesCut = true; break; }   // not even its first file fits: the directory is not started
+            piece += "<named-dir p=\"";
+            piece += escapeXml( a.token, esc );
+            piece += std::format( "\" files=\"{}\"", a.total );
             if( shown < a.total )
             {
-                out += std::format( " shown=\"{}\" capped=\"1\"", shown );
+                piece += std::format( " shown=\"{}\" capped=\"1\"{}", shown, dirCut ? " bytes_capped=\"1\"" : "" );
             }
-            out += ">";
-            for( std::size_t k = 0; k < shown; ++k )
-            {
-                filepage::renderOneFile( out, ing, g, files[k], redact, withMainNext, esc );
-            }
-            out += "</named-dir>";
+            piece += ">";
+            piece += body;
+            piece += "</named-dir>";
+            bytesCut = bytesCut || dirCut;
         }
-        else if( a.total == 1 && a.files.size() == 1 )
+        else if( a.picksOne() )
         {
-            filepage::renderOneFile( out, ing, g, a.files.front(), redact, withMainNext, esc );
+            filepage::renderOneFile( piece, ing, g, a.files.front(), redact, withMainNext, esc );
+            if( !fits( out.size(), piece.size() ) ) { bytesCut = true; break; }
         }
         else
         {
-            out += "<named-files n=\"";
-            out += escapeXml( a.token, esc );
-            out += std::format( "\" total=\"{}\"", a.total );
+            piece += "<named-files n=\"";
+            piece += escapeXml( a.token, esc );
+            piece += std::format( "\" total=\"{}\"{}", a.total, a.near ? " near=\"1\"" : "" );
             if( a.files.size() < a.total )
             {
-                out += std::format( " shown=\"{}\" capped=\"1\"", a.files.size() );
+                piece += std::format( " shown=\"{}\" capped=\"1\"", a.files.size() );
             }
-            out += ">";
+            piece += ">";
             for( const std::uint32_t f : a.files )
             {
                 const std::string_view rel = rootRelPath( ing, f );
                 const std::size_t defs = std::size_t( std::ranges::count_if( ing.symbols, [ & ]( const Symbol& s ) { return s.fileId == f && s.kind != SymKind::ModuleScope && s.fnLocal == 0; } ) );
-                out += "<f p=\"";
-                out += escapeXml( rel, esc );
-                out += std::format( "\" defs=\"{}\"", defs );
+                piece += "<f p=\"";
+                piece += escapeXml( rel, esc );
+                piece += std::format( "\" defs=\"{}\"", defs );
                 if( const std::string_view tier = filepage::tierLabelOf( rel ); !tier.empty() )
                 {
-                    out += std::format( " tier=\"{}\"", tier );
+                    piece += std::format( " tier=\"{}\"", tier );
                 }
-                out += "/>";
+                piece += "/>";
             }
-            out += "</named-files>";
+            if( a.dirTotal > 0 )   // the written path is ALSO a directory: its row, so the agent can name the one it means
+            {
+                piece += "<f p=\"";
+                piece += escapeXml( a.dirPath, esc );
+                piece += std::format( "/\" dir=\"1\" files=\"{}\"/>", a.dirTotal );
+            }
+            piece += "</named-files>";
         }
+        out += piece;
+        ++paged;
     }
-    if( anchors.size() > kForFilePageMaxAnchors )   // a subject naming more files than this pages: the cut is said, never silent
+    if( anchors.size() > paged )   // a subject naming more files than this pages: the cut is said, never silent
     {
-        out += std::format( "<named-cut total=\"{}\" shown=\"{}\"/>", anchors.size(), kForFilePageMaxAnchors );
+        out += std::format( "<named-cut total=\"{}\" shown=\"{}\"{}/>", anchors.size(), paged, bytesCut ? " bytes_capped=\"1\"" : "" );
     }
     return out;
 }
@@ -639,7 +695,7 @@ inline std::uint32_t applyFileSubjectLift( const IngestResult& ing, std::string_
             dirFiles.resize( std::min( dirFiles.size(), kForFilePageDirFiles ) );
             files.insert( files.end(), dirFiles.begin(), dirFiles.end() );
         }
-        else if( a.total == 1 && a.files.size() == 1 )
+        else if( a.picksOne() )
         {
             files.push_back( a.files.front() );
         }
@@ -679,15 +735,18 @@ inline constexpr std::string_view kForFilePageLegend =
     "; named-file p= lines= defs=: the file the task names (a basename, a file stem, a path, or a file of a named-dir), its defs in "
     "line order; s t= n= l= e=: a def and its first/last line, in= its indexed callers (in=0: no caller in the index, NOT unused: a "
     "registration, a table, dynamic dispatch or code the index did not see may reach it), by= their files (by_total= all), via=name "
-    "every caller bound by name alone; next= the graph query listing the file's defs main does not reach; top l= e=: the file's "
+    "every caller bound by name alone; next= the graph query listing the file's defs that neither main nor the file's own top-level code "
+    "reaches within 16 calls (a walk cap, and not proof: a registration or dynamic dispatch may still reach them); top l= e=: the file's "
     "top-level text outside every def, top_cut top_lines= shown= rest=: of the top-level lines, those not shown (in the file; no verb serves them); "
-    "named-files n= total=: the name matches several files, f p= defs= each, none picked; named-dir p= files=: that directory's code files; "
-    "tier=test|generated|vendored; unread=1 the file could not be read; named-cut total= shown=: the subject names more files than were paged; "
-    "shown= capped=1 the list was cut";
+    "named-files n= total=: the name matches several files, f p= defs= each, none picked; near=1 only a SHORTER path than the one written "
+    "matched (listed, never picked); f p= dir=1 files=: the written path is also a directory of that many code files; named-dir p= files=: that "
+    "directory's code files; tier=test|generated|vendored; unread=1 the file could not be read; named-cut total= shown=: the subject names more "
+    "files than were paged; bytes_capped=1 the page stopped at its 16 KB bound, at a file boundary; shown= capped=1 the list was cut";
 inline constexpr std::string_view kForCompactFilePageLegend =
     "; named-file p= lines= defs=: the named file, defs in line order; s t= n= l= e= in= callers (0: none indexed, NOT unused) by= "
-    "their files, by_total= all, via=name; next= graph query of defs main misses; top l= e=: top-level text, top_cut top_lines= "
-    "shown= rest=: lines not shown; named-files n= total=: several files, f p= defs=, none picked; named-dir p= files=; "
-    "tier=test|generated|vendored; unread=1; named-cut total= shown=: more files named than paged; shown= capped=1 cut";
+    "their files, by_total= all, via=name; next= graph query of defs neither main nor the file's top-level code reaches within 16 calls "
+    "(a walk cap); top l= e=: top-level text, top_cut top_lines= shown= rest=: lines not shown; named-files n= total=: several files, "
+    "f p= defs=, none picked; near=1 only a shorter path matched; f dir=1 files=: also a directory; named-dir p= files=; "
+    "tier=test|generated|vendored; unread=1; named-cut total= shown=: more files named than paged; bytes_capped=1 page stopped at 16 KB; shown= capped=1 cut";
 
 } // namespace rw
