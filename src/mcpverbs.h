@@ -20,6 +20,7 @@
 #include "filter.h"        // §P4: rankTierSymbolMultipliers — the fixture/present tier down-weight the CLI ranking lenses apply
 #include "redact.h"        // RedactCounts — the per-request redaction tally threaded through the body/doc verbs
 #include "forpage.h"    // L-W: the --for file page, coverage= and the thin rule — shared with the CLI twin
+#include "forfilepage.h"   // FOR-FILE-ANCHOR: applyFileSubjectLift — the CLI twin's file-subject ranking rule
 #include "forowner.h"   // for-body-slot: the one owner body of an explanatory question — shared with the CLI twin
 #include "packtask.h"      // L4: the shared --pack-task / MCP explore+pack_task bundle assembler (packTaskBundleText)
 #include "partition.h"     // the explore verb's `partition` argument (packTaskPartitionText)
@@ -2540,6 +2541,11 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
             mentionAnchored = mentionInfo.fileCount + mentionInfo.symbolCount;   // §A4f: the same count the CLI candidates root emits
         }
         absorbCapDisclosure( mentionInfo.caps, mentionNote, capAttrs );
+        // FOR-FILE-ANCHOR: the CLI twin's file-subject lift (forfilepage.h), one rule
+        if( const std::uint32_t moved = applyFileSubjectLift( ing, task, lensRank ); moved > 0 )
+        {
+            mentionNote += std::format( " [file subject: {} defs of the named file ranked first]", moved );
+        }
     }
 
     // B3 (co-change prior boost) — OPT-IN, EXPERIMENTAL, same contract as CLI --cochange-boost: files that
@@ -4889,6 +4895,11 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
             lr.mentionNote = nb;
         }
         absorbCapDisclosure( mentionInfo.caps, lr.mentionNote, lr.capAttrs, lr.capJson );
+        // FOR-FILE-ANCHOR: the CLI twin's file-subject lift (computeLensRanking runs it for --pack-task too)
+        if( const std::uint32_t moved = applyFileSubjectLift( ing, task, lr.rank ); moved > 0 )
+        {
+            lr.mentionNote += std::format( " [file subject: {} defs of the named file ranked first]", moved );
+        }
     }
     if( !noRoute && std::getenv( "RIPWIRE_COCHANGE" ) && hasEnclosingGitRepo( root ) )
     {
