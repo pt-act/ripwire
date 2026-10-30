@@ -30,10 +30,10 @@ a small explicit bound" is safe only when nothing inside the group repeats; it i
 
 | total caps | files | caps whose file discloses | caps whose file discloses NOTHING |
 | --- | --- | --- | --- |
-| 312 | 119 | 193 | **119** |
+| 320 | 121 | 201 | **119** |
 
 Plus 7 ranking and apportionment parameters, in their own table below: they are not caps, they
-are not counted as caps, and 312 + 7 is the 319 constants this generator parses out of `src/`.
+are not counted as caps, and 320 + 7 is the 327 constants this generator parses out of `src/`.
 
 ## INDEXING, OUTPUT or BOUNDARY — which half of the answer a cap bounds
 
@@ -51,8 +51,8 @@ None of them truncates anything, so none can be judged by `shown=`/`total=` and 
 a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.
 The distinction was named in review on #108 and the rows below now carry it.
 
-The `class` column below carries that answer where it is known. **142 of 312 caps are classified
-(50 INDEXING, 46 OUTPUT, 46 BOUNDARY); the remaining 170 render `—`, which means NOT YET
+The `class` column below carries that answer where it is known. **143 of 320 caps are classified
+(50 INDEXING, 46 OUTPUT, 47 BOUNDARY); the remaining 177 render `—`, which means NOT YET
 CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with
 a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
@@ -102,7 +102,7 @@ refuse to write, so the column cannot be satisfied by pointing at nothing.
 
 ## Caps, by file
 
-One table for each of the 119 files that declare a cap — the 312 caps counted above, and no parameter.
+One table for each of the 121 files that declare a cap — the 320 caps counted above, and no parameter.
 
 ### `src/abicheck.h`
 
@@ -417,6 +417,19 @@ Discloses: `capped`
 | --- | --- | --- | --- |
 | `kForDispatchCtorRows` | `4` | — | constructor-caller rows per call |
 | `kForDispatchHopRows` | `8` | — | candidate rows per call |
+
+### `src/forfilepage.h`
+
+Discloses: `capped`, `bytes_capped`, `dirs_capped`
+
+| constant | value | class | note |
+| --- | --- | --- | --- |
+| `kForFilePageDefRows` | `40` | — | def rows per file |
+| `kForFilePageMaxAnchors` | `2` | — | file tokens of one subject given a page |
+| `kForFilePageMaxBytes` | `16384` | — | the whole page: no file or directory starts past it (the first always does) |
+| `kForFilePageNextDepth` | `16` | — | calls the next= closure walks from main (said in the legend: a cap, not a fact) |
+| `kForFilePageTopBytes` | `2048` | — | top-level bytes served per file |
+| `kForFilePageTopLines` | `40` | — | top-level lines served per file |
 
 ### `src/forfold.h`
 
@@ -946,6 +959,15 @@ Discloses: `alt_capped`
 | --- | --- | --- | --- |
 | `kPathPairAltRows` | `12` | — | knob: <alt> rows printed; alt= counts them all, alt_capped="1" says rows were cut |
 | `kPathPairMaxDstGroups` | `16` | — | knob: reverse walks per answer; more to= groups keep today's answer |
+
+### `src/pathroute.h`
+
+Discloses: `route_cands_capped`
+
+| constant | value | class | note |
+| --- | --- | --- | --- |
+| `kPathRouteCandsCeiling` | `1000000` | — | route_cands= saturates here (a product of per-hop counts); route_cands_capped="1" says so |
+| `kPathRouteRefuseCandsThreshold` | `64` | BOUNDARY | knob: route_cands at which a chain of >= kPathRouteRefuseNameHops by-name hops is refused, not hedged (wrong chains 144..23712, true chains <= 16) |
 
 ### `src/pattern.h`
 
