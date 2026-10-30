@@ -710,13 +710,15 @@ N6="$( runjs testgatenestedfix 'web/src/shape.ts' )"; N6J="$( runjs testgatenest
       && ! printf '%s' "$N6J" | grep -qF 'hshape\.test\.helper'; } \
     && ok '(n6) #330: only a default-include name gets a vitest/jest command' \
     || no "(n6) #330 default-include shape not enforced: VITEST=$N6 JEST=$N6J"
-# (n7) the check reads the PACKAGE-relative path: a __tests__ directory ABOVE the package is not jest's default.
+# (n7) #442 CR 4429127087: the check reads the ROOT-relative path. jest matches its `__tests__` glob against the whole
+#      path (measured, jest 30.5.2: `__tests__/pkg/src/example.js` run from `pkg` passes), so a `__tests__` directory ABOVE the
+#      package keeps its jest command. The package's cd and package-relative path are unchanged.
 N7="$( runjs testgatenestedfix '__tests__/pkg/src/up.ts' )"
 { printf '%s' "$N7" | grep -qF '__tests__/pkg/src/__up_helper.ts' \
-      && printf '%s' "$N7" | grep -qF 'run_unknown="1"' \
-      && ! printf '%s' "$N7" | grep -qF 'npx jest'; } \
-    && ok '(n7) #330: a __tests__ directory above the package does not make a jest target' \
-    || no "(n7) #330 __tests__ above the package read as jest's default: $N7"
+      && printf '%s' "$N7" | grep -qF "run=\"(cd __tests__/pkg &amp;&amp; npx jest &apos;src/__up_helper\.ts&apos;)\"" \
+      && ! printf '%s' "$N7" | grep -qF 'run_unknown="1"'; } \
+    && ok '(n7) #442: a __tests__ directory above the package still makes a jest target' \
+    || no "(n7) #442 __tests__ above the package lost jest's default collection: $N7"
 
 # (n9) #442 (@llvm-x86): the cd is a SUBSHELL, so it does not outlive the command. Run the printed row with its runner
 #      replaced by pwd, then pwd again, in one shell started at root=: the first line is the package directory, the second

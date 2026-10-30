@@ -533,24 +533,28 @@ inline bool looksLikeJsTestFile( std::string_view path ) noexcept
     return false;
 }
 
-/// Whether `packagePath` (relative to the deciding package.json's directory) is a file vitest's or jest's DEFAULT
+/// Whether `rootRelPath` (relative to the crawl root, ancestors kept) is a file vitest's or jest's DEFAULT
 /// include collects. The vitest rule is `defaultVitestFileName` from #330 by @rainhuang0220. looksLikeJsTestFile
 /// above is the broad pre-filter: it accepts `.test.` anywhere in the name and a `__tests__/` segment for every
 /// runner. Measured with vitest 5.0.2 and jest 30.5.2: `x.test.helper.ts` exits 1 on both ("No test files found" /
 /// "No tests found"), and `__tests__/y.ts` exits 1 on vitest.
 ///   vitest  `**/*.{test,spec}.?(c|m)[jt]s?(x)`
 ///   jest    `**/?(*.)+(spec|test).?([mc])[jt]s?(x)` and `**/__tests__/**/*.?([mc])[jt]s?(x)`
-/// FLOOR, stated: a vitest.config.* / jest.config.* `include`/`testMatch` is NOT read. A config that narrows the
-/// default still gets a command, and one that widens it gets run_unknown="1" for the files only it adds.
-inline bool matchesDefaultInclude( Framework fw, std::string_view packagePath ) noexcept
+/// jest matches its `__tests__` glob against the whole path, so a `__tests__` directory ABOVE the package also
+/// collects (measured, jest 30.5.2: `__tests__/pkg/src/example.js` run from `pkg` passes); hence the root-relative path.
+/// FLOORS, stated: jest 29's default lacks the `.mjs`/`.cjs`/`.mts`/`.cts` extensions, so a jest 29 package gets a
+/// command for such a file that exits 1; and a vitest.config.* / jest.config.* `include`/`testMatch` is NOT read.
+/// A config that narrows the default still gets a command, and one that widens it gets run_unknown="1" for the
+/// files only it adds.
+inline bool matchesDefaultInclude( Framework fw, std::string_view rootRelPath ) noexcept
 {
     static constexpr std::string_view kExts[] = { ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts" };
     std::string_view stem;
     for( const std::string_view ext : kExts )
     {
-        if( packagePath.size() > ext.size() && packagePath.ends_with( ext ) )
+        if( rootRelPath.size() > ext.size() && rootRelPath.ends_with( ext ) )
         {
-            stem = packagePath.substr( 0, packagePath.size() - ext.size() );
+            stem = rootRelPath.substr( 0, rootRelPath.size() - ext.size() );
             break;
         }
     }
@@ -565,24 +569,7 @@ inline bool matchesDefaultInclude( Framework fw, std::string_view packagePath ) 
     {
         return named;
     }
-    return packagePath.starts_with( "__tests__/" ) || packagePath.find( "/__tests__/" ) != std::string_view::npos;
-}
-
-/// The last `climbs + 1` components of a root-relative path: the path below the directory `climbs` levels above
-/// the file. The whole path when it has fewer, which is also the answer for npos (no deciding manifest).
-inline std::string_view packageRelativePath( std::string_view rootRel, std::size_t climbs ) noexcept
-{
-    std::size_t start = rootRel.size();
-    for( std::size_t i = 0; i <= climbs && start != 0; ++i )
-    {
-        const std::size_t slash = rootRel.rfind( '/', start - 1 );
-        if( slash == std::string_view::npos )
-        {
-            return rootRel;
-        }
-        start = slash;
-    }
-    return rootRel.substr( start + 1 );
+    return rootRelPath.starts_with( "__tests__/" ) || rootRelPath.find( "/__tests__/" ) != std::string_view::npos;
 }
 
 /// The CLI verb for a detected framework, or nullptr for `Framework::None` — nullptr propagates to testmap.h
