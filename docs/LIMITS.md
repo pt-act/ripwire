@@ -51,8 +51,8 @@ None of them truncates anything, so none can be judged by `shown=`/`total=` and 
 a disclosure — labelling them OUTPUT would ask for a `capped="1"` that could never honestly fire.
 The distinction was named in review on #108 and the rows below now carry it.
 
-The `class` column below carries that answer where it is known. **142 of 300 caps are classified
-(50 INDEXING, 46 OUTPUT, 46 BOUNDARY); the remaining 158 render `—`, which means NOT YET
+The `class` column below carries that answer where it is known. **143 of 300 caps are classified
+(50 INDEXING, 46 OUTPUT, 47 BOUNDARY); the remaining 157 render `—`, which means NOT YET
 CLASSIFIED — never "neither".** Classifications live in `docs/limits_classes.tsv`, a sidecar with
 a known expiry:
 the tag belongs on the declaration itself, and this file exists only because the round that
@@ -913,7 +913,7 @@ Discloses: `route_cands_capped`
 | constant | value | class | note |
 | --- | --- | --- | --- |
 | `kPathRouteCandsCeiling` | `1000000` | — | route_cands= saturates here (a product of per-hop counts); route_cands_capped="1" says so |
-| `kPathRouteRefuseCandsThreshold` | `64` | — | knob: route_cands at which a chain of >= kPathRouteRefuseNameHops by-name hops is refused, not hedged (wrong chains 144..23712, true chains <= 16) |
+| `kPathRouteRefuseCandsThreshold` | `64` | BOUNDARY | knob: route_cands at which a chain of >= kPathRouteRefuseNameHops by-name hops is refused, not hedged (wrong chains 144..23712, true chains <= 16) |
 
 ### `src/pattern.h`
 
