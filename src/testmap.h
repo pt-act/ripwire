@@ -1341,6 +1341,7 @@ private:
         { return isShellSafePath( s ) ? std::string( s ) : rw::shSingleQuote( std::string( s ) ); };
         std::string_view rel = p;
         std::string      cd;
+        std::string      closeSub;   // ")" when cd opened a subshell
         std::size_t      dirs = 0;   // directory components of the file: its '/' count
         for( const char c : p )
         {
@@ -1353,6 +1354,7 @@ private:
             // a directory named "-x" would read as a cd option; "./" makes it a path
             const std::string dir = pkgDir.front() == '-' ? "./" + std::string( pkgDir ) : std::string( pkgDir );
             cd                    = "(cd " + token( dir ) + " && ";
+            closeSub              = ")";
         }
         if( rel.empty() || rel.front() == '-' )
         {
@@ -1378,7 +1380,7 @@ private:
             }
             arg = std::move( esc );
         }
-        return cd + std::string( verb ) + " " + token( arg ) + ( cd.empty() ? "" : ")" );
+        return cd + std::string( verb ) + " " + token( arg ) + closeSub;
     }
 
     /// Validate a candidate script and format its disk path as one shell argument.
