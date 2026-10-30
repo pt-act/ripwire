@@ -1292,7 +1292,9 @@ private:
         }
         if( const char* verb = jsrunner::verbFor( fw ); verb != nullptr )
         {
-            return verb;   // vitest/jest: explicit package.json evidence, never overridden by import evidence
+            // vitest/jest: explicit package.json evidence, never overridden by import evidence. The evidence names WHICH
+            // runner; the runner's default include says whether it would collect this file (#330, @rainhuang0220).
+            return jsrunner::matchesDefaultInclude( fw, jsrunner::packageRelativePath( relPath, climbs ) ) ? verb : nullptr;
         }
         if( !manifest.empty() && jsrunner::hasAuthoritativeScript( manifest ) )
         {

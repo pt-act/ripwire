@@ -668,6 +668,55 @@ N5="$( runjs testgatenestedfix 'jest/app/[slug]/page.ts' )"; N5EC="$( rcjs testg
     && ok "(n5) #335: bracketed jest path -> regex-escaped filter" \
     || no "(n5) #335 bracketed jest path not escaped (exit=$N5EC): $N5"
 
+# (n8) #442 pins: each skip or spelling predicate of spellJsRun has an arm that goes red without it (review: four
+#      mutants survived). A package-relative path starting with '-' has no command; a directory starting with '-'
+#      is entered as ./-x; a package below root= escapes a plain dot for jest; a multi-root run has no cd.
+N8D="$TMP/n8"; mkdir -p "$N8D/web/-top" "$N8D/-pkg/src" "$N8D/jpkg/src"
+printf '%s\n' '{ "name": "w", "scripts": { "test": "vitest run" }, "devDependencies": { "vitest": "3.2.4" } }' | tee "$N8D/web/package.json" > "$N8D/-pkg/package.json"
+printf '%s\n' '{ "name": "j", "scripts": { "test": "jest" }, "devDependencies": { "jest": "^29.7.0" } }' > "$N8D/jpkg/package.json"
+printf 'export function t(): number { return 1; }\n' | tee "$N8D/web/-top/t.ts" "$N8D/-pkg/src/m.ts" > "$N8D/jpkg/src/j.ts"
+printf 'import { t } from "./t";\nit("x", () => { t(); });\n' > "$N8D/web/-top/t.test.ts"
+printf 'import { t } from "./m";\nit("x", () => { t(); });\n' > "$N8D/-pkg/src/m.test.ts"
+printf 'import { t } from "./j";\nit("x", () => { t(); });\n' > "$N8D/jpkg/src/j.test.ts"
+n8run(){ perl -e 'alarm 15; exec @ARGV' "$BIN" "$N8D" --test-gate="$1" --no-cache 2>/dev/null; }
+N8A="$( n8run web/-top/t.ts )"; N8B="$( n8run -pkg/src/m.ts )"; N8C="$( n8run jpkg/src/j.ts )"
+[ -n "$N8A" ] && printf '%s' "$N8A" | grep -qF '<t p="web/-top/t.test.ts" partner="1" hops="1" run_unknown="1"/>' \
+    && ok "(n8a) #335: a package-relative path starting with - gets run_unknown" \
+    || no "(n8a) #335 a leading-dash path got a command: $N8A"
+[ -n "$N8B" ] && printf '%s' "$N8B" | grep -qF 'run="cd ./-pkg &amp;&amp; npx vitest run src/m.test.ts"' \
+    && ok "(n8b) #335: a directory starting with - is entered as ./-pkg" \
+    || no "(n8b) #335 a leading-dash directory is not ./-prefixed: $N8B"
+[ -n "$N8C" ] && printf '%s' "$N8C" | grep -qF 'npx jest &apos;src/j\.test\.ts&apos;' \
+    && ok "(n8c) #335: jest below root= escapes a plain dot" \
+    || no "(n8c) #335 jest below root= kept a regex dot: $N8C"
+N8M="$( perl -e 'alarm 15; exec @ARGV' "$BIN" "$ROOT/test/testgatenestedfix" "$ROOT/test/testgatevitestfix" --affected=web/src/lib.ts --no-cache 2>/dev/null )"
+{ printf '%s' "$N8M" | grep -qF 'npx vitest run ' && printf '%s' "$N8M" | grep -qF 'web/src/lib.test.ts' \
+      && ! printf '%s' "$N8M" | grep -qF 'run="cd '; } \
+    && ok "(n8d) #335: a multi-root run keeps the plain command, no cd" \
+    || no "(n8d) #335 multi-root run printed a cd: $N8M"
+
+# (n6) #330 (@rainhuang0220): a vitest/jest command only for a file the runner's DEFAULT include collects.
+#      x.test.helper.ts fails on both runners and a bare __tests__/ file fails on vitest ("No test files
+#      found", exit 1): run_unknown="1". jest's own __tests__/ default keeps its command.
+N6="$( runjs testgatenestedfix 'web/src/shape.ts' )"; N6J="$( runjs testgatenestedfix 'jest/src/hshape.ts' )"
+{ printf '%s' "$N6" | grep -qF 'run="cd web &amp;&amp; npx vitest run src/shape.test.ts"' \
+      && ! printf '%s' "$N6" | grep -qF 'run="cd web &amp;&amp; npx vitest run src/shape.test.helper.ts"' \
+      && ! printf '%s' "$N6" | grep -qF 'npx vitest run src/__tests__/shape.ts' \
+      && printf '%s' "$N6" | grep -qF 'web/src/shape.test.helper.ts' \
+      && printf '%s' "$N6" | grep -qF 'web/src/__tests__/shape.ts' \
+      && printf '%s' "$N6" | grep -qF 'run_unknown="1"' \
+      && printf '%s' "$N6J" | grep -qF "npx jest &apos;src/__tests__/hshape\.ts&apos;" \
+      && ! printf '%s' "$N6J" | grep -qF 'hshape\.test\.helper'; } \
+    && ok '(n6) #330: only a default-include name gets a vitest/jest command' \
+    || no "(n6) #330 default-include shape not enforced: VITEST=$N6 JEST=$N6J"
+# (n7) the check reads the PACKAGE-relative path: a __tests__ directory ABOVE the package is not jest's default.
+N7="$( runjs testgatenestedfix '__tests__/pkg/src/up.ts' )"
+{ printf '%s' "$N7" | grep -qF '__tests__/pkg/src/__up_helper.ts' \
+      && printf '%s' "$N7" | grep -qF 'run_unknown="1"' \
+      && ! printf '%s' "$N7" | grep -qF 'npx jest'; } \
+    && ok '(n7) #330: a __tests__ directory above the package does not make a jest target' \
+    || no "(n7) #330 __tests__ above the package read as jest's default: $N7"
+
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit $fail
 
