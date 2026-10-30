@@ -162,6 +162,11 @@ w("y3/crate/src/mw/mod.rs", "pub fn mw_root() -> u32 {\n    0\n}\n")
 for i in range(1, 8):
     w("y3p/pkg/ware/f%d.ts" % i, "export function f%d_run(): number {\n  return %d\n}\n" % (i, i))
 w("y3p/pkg/ware/index.ts", "export function ware_root(): number {\n  return 0\n}\n")
+# Y4: a directory that fills the page, then a name matching several files
+for f in range(1, 8):
+    w("y4/pkg/big/f%d.py" % f, "".join("def big_f%d_op%02d(first_argument, second_argument, third_argument, fourth_argument, fifth_argument, sixth_argument, seventh_argument, eighth_arg):\n    return first_argument\n\n" % (f, i) for i in range(60)))
+for d in range(1, 9):
+    w("y4/long_directory_name_number_%d_with_an_even_longer_tail_for_bytes/dup.py" % d, "def dup_%d():\n    return %d\n" % (d, d))
 # T1: a test twin (tier=) and a def called from four files (by_total=)
 # H2/N3: a C header carries no next= (its prototypes' callers bind to the definitions); a path naming a prose file is no page
 w("d7/docs/guide.md", "# Guide\n\n## Install\n\ntext\n")
@@ -339,6 +344,11 @@ f3="$( grep -o '<named-file p="[^"]*"' "$T/y3.xml" | head -1 )"; f3p="$( grep -o
 if [ "$f3" = '<named-file p="crate/src/mw/mod.rs"' ] && [ "$f3p" = '<named-file p="pkg/ware/index.ts"' ] && has "$T/y3.xml" 'files="8" shown="6" capped="1"'; then
     ok "Y3 the module root (mod.rs, index.ts) is the directory's first page, not the last by path order"
 else no "Y3 module root not first: $f3 / $f3p"; fi
+run y4 --for="pkg/big dup.py" > "$T/y4.xml"
+py4="$( pagebytes "$T/y4.xml" )"
+if has "$T/y4.xml" 'bytes_capped="1"' && ! has "$T/y4.xml" '<named-files n="dup.py"' && has "$T/y4.xml" '<named-cut total="2" shown="1" bytes_capped="1"/>' && [ "$py4" -gt 0 ] && [ "$py4" -le 16640 ]; then
+    ok "Y4 a listing after a full directory obeys the 16 KB bound and says so ($py4 B)"
+else no "Y4 pkg/big dup.py: the listing was appended past the bound ($py4 B) or the cut is not disclosed"; fi
 
 # ── M4: a minified file with no top-level row is not an empty page ──────────────────────────────────────────────────────────────
 run m4 --for=mini.js > "$T/m4.xml"

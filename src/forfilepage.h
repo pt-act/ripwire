@@ -694,6 +694,7 @@ inline std::string renderForFilePage( const IngestResult& ing, const Graph& g, s
                 piece += std::format( "/\" dir=\"1\" files=\"{}\"/>", dirFiles );
             }
             piece += "</named-files>";
+            if( !fits( out.size(), piece.size() ) ) { bytesCut = true; break; }   // the one byte bound holds for a listing after a full directory too
         }
         out += piece;
         ++paged;
