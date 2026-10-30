@@ -383,6 +383,13 @@ for a in B63 N4 N6; do
         no "(U) $a: next=[$nx] unlikely=$( grep -c UNLIKELY <<<"$full" ) fullclause=$( grep -c 'a low count is no proof' <<<"$full" ) compactclause=$( grep -c 'a low count is no proof' <<<"$cmp" )"
     fi
 done
+# with the hop-body next= off (RIPWIRE_NO_HOP_BODY) the root has no other next=, so a >= 4-hop hedge names from='s callees (shell-safe)
+U2="$( RIPWIRE_NO_HOP_BODY=1 run b63 --path=start_entry,Sink.sink_call )"
+if [ "$( attr route_hedged <<<"$U2" )" = name-stitched ] && [ "$( attr next <<<"$U2" )" = "--callees=m.py:start_entry" ]; then
+    ok "(U) B63 without the hop-body next=: the >= 4-hop hedge names from='s callees"
+else
+    no "(U) B63 no-hop-body: $( grep -o '<path [^>]*>' <<<"$U2" )"
+fi
 # a 2-hop hedge is NOT called unlikely and carries no next=
 if grep -q 'UNLIKELY' <<<"$( run h --legend=full --path=start_entry,Sink.finish )" || [ "$( attr next <<<"$H" )" != - ]; then no "(U) H: a 2-hop hedge is called unlikely or carries next="; else ok "(U) H: a 2-hop hedge is neither unlikely nor given a next="; fi
 # the compact path purpose no longer says "when none" in front of a refusal
