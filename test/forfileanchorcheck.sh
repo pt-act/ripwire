@@ -149,6 +149,12 @@ for d in range(1, 10):
 # Y1: a JS class holds methods (kind=method): next= must list an uncalled METHOD, not only free functions; a C main roots the closure
 w("y1/web/app.js", "class Server {\n  start() {\n    return helperA();\n  }\n  orphanMethod() {\n    return 2;\n  }\n}\nfunction helperA() {\n  return 1;\n}\nfunction deadFn() {\n  return 3;\n}\n")
 w("y1/src/main.c", "int main(void) {\n    return 0;\n}\n")
+# Y2: src/utils is a directory at the root AND inside pkg/x, and a file pkg/y/src/utils.ts; y2b has no such file
+for root in ("y2", "y2b"):
+    w(root + "/src/utils/a.ts", "export function a(): number {\n  return 1\n}\n")
+    w(root + "/pkg/x/src/utils/b.ts", "export function b(): number {\n  return 2\n}\n")
+    w(root + "/pkg/x/src/utils/c.ts", "export function c(): number {\n  return 3\n}\n")
+w("y2/pkg/y/src/utils.ts", "export function y(): number {\n  return 4\n}\n")
 # T1: a test twin (tier=) and a def called from four files (by_total=)
 # H2/N3: a C header carries no next= (its prototypes' callers bind to the definitions); a path naming a prose file is no page
 w("d7/docs/guide.md", "# Guide\n\n## Install\n\ntext\n")
@@ -307,6 +313,20 @@ replay y1 "$nxy1" > "$T/y1q.xml"; rc=$?
 if [ -n "$nxy1" ] && [ "$rc" -eq 0 ] && has "$T/y1q.xml" 'n="orphanMethod"' && has "$T/y1q.xml" 'n="deadFn"'; then
     ok "Y1 next= lists an uncalled METHOD (orphanMethod) beside the free functions it already listed"
 else no "Y1 next= replay rc=$rc: orphanMethod (kind=method) missing from the file's unreached defs ($nxy1)"; fi
+run y2 --for=src/utils > "$T/y2.xml"
+run y2b --for=src/utils > "$T/y2b.xml"
+if has "$T/y2.xml" '<f p="src/utils/" dir="1" files="1"/>' && has "$T/y2.xml" '<f p="pkg/x/src/utils/" dir="1" files="2"/>' \
+   && python3 - "$T/y2.xml" <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+sys.exit(0 if s.find('p="src/utils/" dir="1"') < s.find('p="pkg/x/src/utils/" dir="1"') and 'p="pkg/y/src/utils.ts"' in s and "<named-file " not in s else 1)
+PY
+then ok "Y2 the dir rows count and name one directory each, the one written exactly first (src/utils/ 1, pkg/x/src/utils/ 2)"
+else no "Y2 src/utils: a dir row names one directory with another's count, or the directory as written is not first"; fi
+firstf="$( grep -o '<named-file p="[^"]*"' "$T/y2b.xml" | head -1 )"
+if has "$T/y2b.xml" '<named-dir p="src/utils" files="3">' && [ "$firstf" = '<named-file p="src/utils/a.ts"' ]; then
+    ok "Y2 a directory with no same-named file: the directory as written is paged first ($firstf)"
+else no "Y2 src/utils (directories only): first page is $firstf, not src/utils/a.ts"; fi
 
 # ── M4: a minified file with no top-level row is not an empty page ──────────────────────────────────────────────────────────────
 run m4 --for=mini.js > "$T/m4.xml"
@@ -379,7 +399,8 @@ run long --for=run-deploy.sh --legend=full > "$T/l1k.xml"   # the full dialect o
 run py --for=util.py --legend=full > "$T/l1c.xml"
 run d5 --for=lib/a.c --legend=full > "$T/l1d5.xml"; run d6 --for=src/utils --legend=compact > "$T/l1d6.xml"
 run m3 --for="pkg/big pkg/big2" --legend=full > "$T/l1m3.xml"; run m4 --for=mini.js --legend=full > "$T/l1m4.xml"
-for f in "$T/b1.xml" "$T/l1.xml" "$T/c1.xml" "$T/d1.xml" "$T/k1.xml" "$T/k2.xml" "$T/l1k.xml" "$T/l1c.xml" "$T/l1d5.xml" "$T/l1d6.xml" "$T/l1m3.xml" "$T/l1m4.xml" "$T/m3a.xml"; do
+run y2 --for=src/utils --legend=full > "$T/l1y2.xml"
+for f in "$T/b1.xml" "$T/l1.xml" "$T/c1.xml" "$T/d1.xml" "$T/k1.xml" "$T/k2.xml" "$T/l1k.xml" "$T/l1c.xml" "$T/l1d5.xml" "$T/l1d6.xml" "$T/l1m3.xml" "$T/l1m4.xml" "$T/l1y2.xml" "$T/m3a.xml"; do
     if python3 - "$f" <<'PY'
 import re, sys
 s = open(sys.argv[1]).read()

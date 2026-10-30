@@ -35,6 +35,7 @@
 #include <cstdlib>
 #include <format>
 #include <optional>
+#include <tuple>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -67,11 +68,13 @@ struct FileAnchor
     std::vector<std::uint32_t> files;        // at most kForFilePageListFiles (a directory: its code files, at most that many)
     std::uint32_t              total = 0;    // every file it names
     bool                       near  = false;   // a SHORTER path than the one written matched: listed, never picked
-    std::uint32_t              dirTotal = 0;    // the path also names a directory of this many code files (a file matched in full too)
-    std::string                dirPath;         // that directory, root-relative
+    // the path ALSO names directories of code files (a file matched in full too): one row per directory, the one written exactly first
+    // (root-relative path, ITS OWN code-file count — the shown and the counted set are the same set); dirsCut when more matched than rows
+    std::vector<std::pair<std::string, std::uint32_t>> dirs;
+    bool                       dirsCut = false;
 
     // is the anchor exactly one file the subject named in full (page it, lift it)?
-    bool picksOne() const noexcept { return kind != 'd' && total == 1 && files.size() == 1 && !near && dirTotal == 0; }
+    bool picksOne() const noexcept { return kind != 'd' && total == 1 && files.size() == 1 && !near && dirs.empty(); }
 };
 
 namespace filepage
@@ -131,6 +134,42 @@ inline void collectFiles( const IngestResult& ing, FileAnchor& a, Match match )
     }
 }
 
+// The code files of the directories a slash token names (dirSuffixMatches), in the order the page serves them: a directory spelled
+// exactly as written first, non-test before test, path order within. `files` keeps the first kForFilePageListFiles of that order,
+// `total` counts every one, and `dirs` holds one row per distinct directory with its own count.
+inline FileAnchor collectDirFiles( const IngestResult& ing, const std::vector<std::string>& segments, const std::string& token )
+{
+    using namespace mention_detail;
+    FileAnchor dir;
+    dir.kind  = 'd';
+    dir.token = token;
+    struct Hit { std::uint32_t f; bool inexact, test; std::string_view dirOf; };
+    std::vector<Hit> hits;
+    for( std::uint32_t f = 0; f < ing.files.size(); ++f )
+    {
+        const std::string_view rel = rootRelPath( ing, f );
+        if( !isListableCodeFile( rel ) || !dirSuffixMatches( rel, segments ) )
+        {
+            continue;
+        }
+        const std::string_view base = baseNameOf( rel );
+        const std::string_view dirOf = rel.substr( 0, rel.size() - base.size() - 1 );
+        hits.push_back( { f, dirOf != token, isTestPath( rel ), dirOf } );
+    }
+    std::stable_sort( hits.begin(), hits.end(), []( const Hit& x, const Hit& y )
+                      { return std::tie( x.inexact, x.test ) < std::tie( y.inexact, y.test ); } );
+    dir.total = std::uint32_t( hits.size() );
+    for( const Hit& h : hits )
+    {
+        if( dir.files.size() < kForFilePageListFiles ) { dir.files.push_back( h.f ); }
+        auto row = std::ranges::find_if( dir.dirs, [ & ]( const auto& d ) { return d.first == h.dirOf; } );
+        if( row != dir.dirs.end() )   { ++row->second; }
+        else if( dir.dirs.size() < kForFilePageListFiles ) { dir.dirs.emplace_back( std::string( h.dirOf ), 1u ); }
+        else                                               { dir.dirsCut = true; }
+    }
+    return dir;
+}
+
 // one extracted mention as a file anchor: a bare basename (RawMention::whole), else a path by the longest suffix any file matches,
 // else a directory whose code files a slash token names; total == 0 when it names no file
 inline FileAnchor anchorOfMention( const IngestResult& ing, const mention_detail::RawMention& m )
@@ -157,19 +196,15 @@ inline FileAnchor anchorOfMention( const IngestResult& ing, const mention_detail
     collectFiles( ing, a, [ & ]( std::uint32_t f ) { return isCode( f ) && pathSuffixMatches( rootRelPath( ing, f ), m.segments ); } );
     // ... and the directory it may name — read on the full path BEFORE any shorter suffix, so `src/helper/cookie` is never
     // answered by an unrelated src/utils/cookie.ts that merely shares its last segment's stem
-    FileAnchor dir;
-    dir.kind  = 'd';
-    dir.token = a.token;
-    collectFiles( ing, dir, [ & ]( std::uint32_t f ) { return isCode( f ) && dirSuffixMatches( rootRelPath( ing, f ), m.segments ); } );
+    FileAnchor dir = collectDirFiles( ing, m.segments, a.token );
     if( dir.total > 0 && a.total == 0 )
     {
         return dir;
     }
     if( dir.total > 0 )   // a file AND a directory answer to the written path: both said, none picked
     {
-        const std::string_view first = rootRelPath( ing, dir.files.front() );
-        a.dirTotal = dir.total;
-        a.dirPath.assign( first.substr( 0, first.size() - baseNameOf( first ).size() - 1 ) );
+        a.dirs    = std::move( dir.dirs );
+        a.dirsCut = dir.dirsCut;
         return a;
     }
     // a SHORTER suffix is never a page: a file at a path the subject did not write is listed as near, picked by nobody
@@ -596,8 +631,7 @@ inline std::string renderForFilePage( const IngestResult& ing, const Graph& g, s
         std::string       piece;
         if( a.kind == 'd' )
         {
-            std::vector<std::uint32_t> files = a.files;   // non-test files first, then tests, path order within (fileId order)
-            std::stable_partition( files.begin(), files.end(), [ & ]( std::uint32_t f ) { return !isTestPath( rootRelPath( ing, f ) ); } );
+            const std::vector<std::uint32_t>& files = a.files;   // already in serving order (collectDirFiles)
             std::string       body;
             std::size_t       shown = 0;
             bool              dirCut = false;
@@ -631,7 +665,7 @@ inline std::string renderForFilePage( const IngestResult& ing, const Graph& g, s
         {
             piece += "<named-files n=\"";
             piece += escapeXml( a.token, esc );
-            piece += std::format( "\" total=\"{}\"{}", a.total, a.near ? " near=\"1\"" : "" );
+            piece += std::format( "\" total=\"{}\"{}{}", a.total, a.near ? " near=\"1\"" : "", a.dirsCut ? " dirs_capped=\"1\"" : "" );
             if( a.files.size() < a.total )
             {
                 piece += std::format( " shown=\"{}\" capped=\"1\"", a.files.size() );
@@ -650,11 +684,11 @@ inline std::string renderForFilePage( const IngestResult& ing, const Graph& g, s
                 }
                 piece += "/>";
             }
-            if( a.dirTotal > 0 )   // the written path is ALSO a directory: its row, so the agent can name the one it means
+            for( const auto& [dirPath, dirFiles] : a.dirs )   // the written path is ALSO a directory: a row per directory (the one written first)
             {
                 piece += "<f p=\"";
-                piece += escapeXml( a.dirPath, esc );
-                piece += std::format( "/\" dir=\"1\" files=\"{}\"/>", a.dirTotal );
+                piece += escapeXml( dirPath, esc );
+                piece += std::format( "/\" dir=\"1\" files=\"{}\"/>", dirFiles );
             }
             piece += "</named-files>";
         }
@@ -690,10 +724,7 @@ inline std::uint32_t applyFileSubjectLift( const IngestResult& ing, std::string_
         const FileAnchor& a = anchors[ai];
         if( a.kind == 'd' )
         {
-            std::vector<std::uint32_t> dirFiles = a.files;
-            std::stable_partition( dirFiles.begin(), dirFiles.end(), [ & ]( std::uint32_t f ) { return !isTestPath( rootRelPath( ing, f ) ); } );
-            dirFiles.resize( std::min( dirFiles.size(), kForFilePageDirFiles ) );
-            files.insert( files.end(), dirFiles.begin(), dirFiles.end() );
+            files.insert( files.end(), a.files.begin(), a.files.begin() + std::min( a.files.size(), kForFilePageDirFiles ) );   // serving order
         }
         else if( a.picksOne() )
         {
@@ -739,14 +770,14 @@ inline constexpr std::string_view kForFilePageLegend =
     "reaches within 16 calls (a walk cap, and not proof: a registration or dynamic dispatch may still reach them); top l= e=: the file's "
     "top-level text outside every def, top_cut top_lines= shown= rest=: of the top-level lines, those not shown (in the file; no verb serves them); "
     "named-files n= total=: the name matches several files, f p= defs= each, none picked; near=1 only a SHORTER path than the one written "
-    "matched (listed, never picked); f p= dir=1 files=: the written path is also a directory of that many code files; named-dir p= files=: that "
+    "matched (listed, never picked); f p= dir=1 files=: the written path is also a directory (one row each, the one written first) of that many code files, dirs_capped=1 more directories matched than rows; named-dir p= files=: that "
     "directory's code files; tier=test|generated|vendored; unread=1 the file could not be read; named-cut total= shown=: the subject names more "
     "files than were paged; bytes_capped=1 the page stopped at its 16 KB bound, at a file boundary; shown= capped=1 the list was cut";
 inline constexpr std::string_view kForCompactFilePageLegend =
     "; named-file p= lines= defs=: the named file, defs in line order; s t= n= l= e= in= callers (0: none indexed, NOT unused) by= "
     "their files, by_total= all, via=name; next= graph query of defs neither main nor the file's top-level code reaches within 16 calls "
     "(a walk cap); top l= e=: top-level text, top_cut top_lines= shown= rest=: lines not shown; named-files n= total=: several files, "
-    "f p= defs=, none picked; near=1 only a shorter path matched; f dir=1 files=: also a directory; named-dir p= files=; "
+    "f p= defs=, none picked; near=1 only a shorter path matched; f dir=1 files=: also a directory, dirs_capped=1 more than rows; named-dir p= files=; "
     "tier=test|generated|vendored; unread=1; named-cut total= shown=: more files named than paged; bytes_capped=1 page stopped at 16 KB; shown= capped=1 cut";
 
 } // namespace rw
