@@ -9,7 +9,7 @@
 # THE CONTRACT (one predicate, both transports):
 #   >= 2 by-name hops and a proven-only chain exists  -> the proven chain prints, route_hedged="proven-preferred"
 #   >= 2 by-name hops, no proven chain                -> printed, route_hedged="name-stitched" route_by_name= route_cands=
-#   >= 3 by-name hops, route_cands > 1, no proven one -> refused: reachable="0" hops="0" route_hedged="not-proven", no hop rows,
+#   >= 4 by-name hops, route_cands > 1, no proven one -> refused: reachable="0" hops="0" route_hedged="not-proven", no hop rows,
 #                                                        next="--callees=<from>"
 #   0..1 by-name hop, or cands=1 everywhere            -> unchanged (no route_hedged=)
 #
@@ -18,7 +18,8 @@
 #   (P) proven-preferred: a 3-hop by-name shortcut beside a 6-hop proven chain: the proven chain prints, no via=name row.
 #   (H) hedge: two by-name hops (cands 2): printed whole, route_hedged="name-stitched" route_by_name="2".
 #   (N1) near miss: one by-name hop among proven ones: no route_hedged=.
-#   (N2) near miss: three by-name hops each with ONE candidate (cands=1): hedged, never refused.
+#   (N2) near miss: four by-name hops each with ONE candidate (cands=1): hedged, never refused.
+#   (N3) near miss: three by-name hops with cands=2 each (the LARGE-DEV cpython-02 shape, a TRUE chain): hedged, never refused.
 #   (L) the --legend=full clause rides exactly when route_hedged= does; every answer parses (xmllint when present).
 #   (M) MCP path_between: the same verdict attrs and the same rows as the CLI on R, P, H.
 #   (F) --for "<path subject>": the <graph_verb> block carries the same verdict as the CLI on R.
@@ -37,7 +38,7 @@ no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 2; }
 
-mkdir -p "$TMP/r" "$TMP/p" "$TMP/h" "$TMP/n1" "$TMP/n2" "$TMP/home"
+mkdir -p "$TMP/r" "$TMP/p" "$TMP/h" "$TMP/n1" "$TMP/n2" "$TMP/n3" "$TMP/home"
 # (R) every hop by name, each name defined by two classes (cands=2 per hop)
 cat > "$TMP/r/m.py" <<'EOF'
 class Alpha:
@@ -145,7 +146,7 @@ def mid(o):
 def start_entry(o):
     return mid(o)
 EOF
-# (N2) three by-name hops, each name defined once (cands=1)
+# (N2) four by-name hops, each name defined once (cands=1)
 cat > "$TMP/n2/m.py" <<'EOF'
 class Alpha:
     def u1(self, o):
@@ -155,10 +156,40 @@ class Alpha:
 
 class Gamma:
     def u3(self, o):
+        return o.u4(o)
+
+class Delta:
+    def u4(self, o):
         return 1
 
 def start_entry(o):
     return o.u1(o)
+EOF
+
+# (N3) three by-name hops, cands=2 each: Alpha.s1 -> o.s2 -> o.sink_call
+cat > "$TMP/n3/m.py" <<'EOF'
+class Alpha:
+    def s1(self, o):
+        return o.s2(o)
+    def s2(self, o):
+        return o.sink_call(o)
+
+class Beta:
+    def s1(self, o):
+        return 0
+    def s2(self, o):
+        return 0
+
+class Decoy:
+    def sink_call(self, o):
+        return 1
+
+class Sink:
+    def sink_call(self, o):
+        return 2
+
+def start_entry(o):
+    return o.s1(o)
 EOF
 
 run(){ local d=$1; shift; ( cd "$TMP/$d" || exit 1; env -u RIPWIRE_LEGEND HOME="$TMP/home" "$BIN" "$TMP/$d" --no-cache "$@" < /dev/null 2>/dev/null ); }
@@ -192,11 +223,18 @@ fi
 N1="$( run n1 --path=start_entry,leaf )"
 if [ "$( attr reachable <<<"$N1" )" = 1 ] && [ "$( attr route_hedged <<<"$N1" )" = - ]; then ok "(N1) one by-name hop: no route_hedged="; else no "(N1) $( grep -o '<path [^>]*>' <<<"$N1" )"; fi
 # (N2)
-N2="$( run n2 --path=start_entry,Gamma.u3 )"
+N2="$( run n2 --path=start_entry,Delta.u4 )"
 if [ "$( attr reachable <<<"$N2" )" = 1 ] && [ "$( attr route_cands <<<"$N2" )" = 1 ] && [ "$( attr route_hedged <<<"$N2" )" = name-stitched ]; then
-    ok "(N2) three by-name hops with one candidate each: hedged, never refused"
+    ok "(N2) four by-name hops with one candidate each: hedged, never refused"
 else
     no "(N2) $( grep -o '<path [^>]*>' <<<"$N2" )"
+fi
+# (N3)
+N3="$( run n3 --path=start_entry,Sink.sink_call )"
+if [ "$( attr reachable <<<"$N3" )" = 1 ] && [ "$( attr route_by_name <<<"$N3" )" = 3 ] && [ "$( attr route_hedged <<<"$N3" )" = name-stitched ]; then
+    ok "(N3) three by-name hops with two candidates each: hedged and printed, never refused"
+else
+    no "(N3) $( grep -o '<path [^>]*>' <<<"$N3" )"
 fi
 # (L)
 fullof(){ case $1 in

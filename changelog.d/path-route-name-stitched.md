@@ -10,7 +10,7 @@ and nothing on the answer said so. One shared verdict now judges the chain a sin
   printed instead, with `route_hedged="proven-preferred" route_len= route_by_name=` describing the shorter by-name one.
 - 2 or more by-name hops and no proven chain: printed as before, hedged on the root with
   `route_hedged="name-stitched" route_by_name="K" route_cands="P"` (K by-name hops, P the product of their same-named candidates).
-- 3 or more by-name hops with more than one candidate chain and no proven chain: refused as the answer. The root says
+- 4 or more by-name hops with more than one candidate chain and no proven chain: refused as the answer (3 is only hedged: on CPython, `--path=asyncio.run,Handle._run` is a true chain with 3 by-name hops). The root says
   `reachable="0" hops="0" route_hedged="not-proven" route_len="N"`, no hop rows print, and `next=` follows `from=`'s callees. The
   legend says reachable=0 here means "not proven", never "no route".
 

@@ -17,7 +17,9 @@
 // (route_hedged="proven-preferred": a shorter chain exists only by name), so neither the hedge nor the refusal ever hides a proven route.
 //
 // THE RULE (thresholds measured over every reached --path / <graph_verb> chain in S1, MF1-DEV, MF1-DEV-2, LARGE-DEV, LD-2: no
-// single-chain answer outside the two target rows carries more than 1 by-name hop):
+// single-chain answer outside four LARGE-DEV / LD-2 rows carries more than 1 by-name hop; of those four, the two wrong chains carry
+// 5 by-name hops (LD-2 django-06, LARGE-DEV cockroach-04) and the two with 3 split: cpython-02's is the true asyncio chain,
+// django-07's is wrong — so 3 is hedged, never refused, and the refusal starts at 4):
 //   * fewer than kPathRouteHedgeNameHops by-name hops: printed as before (each hop's via="name" row is its own hedge);
 //   * kPathRouteHedgeNameHops or more: printed, HEDGED on the root (route_hedged="name-stitched" route_by_name= route_cands=);
 //   * kPathRouteRefuseNameHops or more AND more than one candidate chain (route_cands > 1): REFUSED as the answer — the chain's rows
@@ -44,8 +46,8 @@ namespace rw
 {
 
 inline constexpr std::size_t   kPathRouteHedgeNameHops  = 2;        // knob (knob-census ADDENDUM): by-name hops that hedge the root
-inline constexpr std::size_t   kPathRouteRefuseNameHops = 3;        // knob: by-name hops (with cands > 1) that refuse the chain
-inline constexpr std::uint64_t kPathRouteCandsCeiling   = 1000000;  // route_cands= saturates here (a product of per-hop counts)
+inline constexpr std::size_t   kPathRouteRefuseNameHops = 4;        // knob: by-name hops (with cands > 1) that refuse the chain
+inline constexpr std::uint64_t kPathRouteCandsCeiling   = 1000000;  // route_cands= saturates here (a product of per-hop counts); route_cands_capped="1" says so
 
 struct PathRouteVerdict
 {
@@ -104,7 +106,7 @@ inline std::string pathRouteRootAttrs( const IngestResult& ing, const PathRouteV
         return {};
     }
     std::string out = v.refused ? " route_hedged=\"not-proven\" route_len=\"" + std::to_string( v.hops ) + "\"" : std::string( " route_hedged=\"name-stitched\"" );
-    out += " route_by_name=\"" + std::to_string( v.byName ) + "\" route_cands=\"" + std::to_string( v.cands ) + "\"";
+    out += " route_by_name=\"" + std::to_string( v.byName ) + "\" route_cands=\"" + std::to_string( v.cands ) + "\"" + ( v.cands >= kPathRouteCandsCeiling ? " route_cands_capped=\"1\"" : "" );
     if( v.refused && !hasNext && from < ing.symbols.size() )
     {
         out += nextAttrXml( "--callees=" + pathPairSelector( ing, from, singleRoot, rootPrefix ) );
@@ -123,14 +125,14 @@ inline std::string_view pathRouteLegend( const PathRouteVerdict& v ) noexcept
     if( v.refused )
     {
         return "route_hedged=not-proven route_len=N route_by_name=K route_cands=P: the only chain the search found is N hops, K of them "
-               "bound by name alone (receiver unproven), standing for P same-named candidate chains, so it is NOT printed as the answer: "
+               "bound by name alone (receiver unproven), standing for P same-named candidate chains (route_cands_capped=1: at least P), so it is NOT printed as the answer: "
                "reachable=0 here means not proven, never no route, and the true route may be another; next= follows from='s callees "
                "(the callers verb walks back from to=; connect on from=,to= shows the edges with their via= marks). ";
     }
     if( v.hedged )
     {
         return "route_hedged=name-stitched route_by_name=K route_cands=P: K of the shown chain's hops are bound by name alone (the via=name "
-               "rows; receiver unproven), standing for P same-named candidate chains: the route is a hedge, and the true route may be another. ";
+               "rows; receiver unproven), standing for P same-named candidate chains (route_cands_capped=1: at least P): the route is a hedge, and the true route may be another. ";
     }
     return "";
 }
