@@ -92,6 +92,33 @@ inline PathRouteVerdict pathRouteVerdict( const IngestResult& ing, const Graph& 
     return v;
 }
 
+// The chains an answer prints after the verdict, for both transports: rows = the hop rows (none when refused; the proven chain when
+// proven-preferred; else the search's path), shown = the root's hops= chain, bind = the chain from_p=/to_p= are read off (a refused
+// chain still bound its endpoints), from/to = the definitions bound. srcDefs/dstDefs are non-empty (the callers refuse an unresolved one).
+struct PathRouteChains
+{
+    PathRouteVerdict    verdict;
+    std::vector<NodeId> rows, shown, bind;
+    NodeId              from = kNoNode, to = kNoNode;
+};
+inline PathRouteChains pathRouteChains( const IngestResult& ing, const Graph& g, const PathPairs& pp, const std::vector<NodeId>& path,
+                                        const std::vector<NodeId>& srcDefs, const std::vector<NodeId>& dstDefs )
+{
+    EXPECTS( !srcDefs.empty() && !dstDefs.empty(), "both --path transports refuse an endpoint that resolves to no definition first" );
+    PathRouteChains            c;
+    const std::vector<NodeId>& found = pathShownChain( pp, path );
+    c.verdict                        = pathRouteVerdict( ing, g, pp, found, srcDefs, dstDefs );
+    if( !c.verdict.refused )
+    {
+        c.rows  = c.verdict.proven.empty() ? path : c.verdict.proven;
+        c.shown = c.verdict.proven.empty() ? found : c.verdict.proven;
+    }
+    c.bind = c.verdict.refused ? found : c.shown;
+    c.from = c.bind.empty() ? srcDefs.front() : c.bind.front();
+    c.to   = c.bind.empty() ? dstDefs.front() : c.bind.back();
+    return c;
+}
+
 // The root attributes the verdict adds ("" when it neither hedges nor refuses). A refused answer names from='s callees in next=
 // unless the root already carries a next= (`hasNext`).
 inline std::string pathRouteRootAttrs( const IngestResult& ing, const PathRouteVerdict& v, NodeId from, bool hasNext, bool singleRoot,

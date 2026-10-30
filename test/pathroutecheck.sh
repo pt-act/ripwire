@@ -32,7 +32,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 echo "pathroutecheck: BIN=$BIN"
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
@@ -204,7 +204,7 @@ if [ "$( attr reachable <<<"$R" )" = 0 ] && [ "$( attr route_hedged <<<"$R" )" =
 else
     no "(R) refuse: $( grep -o '<path [^>]*>' <<<"$R" ) rows=[$( rows <<<"$R" )]"
 fi
-grep -q 'Decoy' <<<"$R" && no "(R) the decoy rides in the answer" || ok "(R) no decoy row"
+if grep -q 'Decoy' <<<"$R"; then no "(R) the decoy rides in the answer"; else ok "(R) no decoy row"; fi
 # (P)
 P="$( run p --path=start_entry,Sink.fin )"
 if [ "$( attr route_hedged <<<"$P" )" = proven-preferred ] && [ "$( attr reachable <<<"$P" )" = 1 ] && [ "$( attr hops <<<"$P" )" = 6 ] && ! grep -q 'via="name"' <<<"$P"; then
@@ -246,12 +246,12 @@ fullof(){ case $1 in
 for a in R P H N1; do
     full="$( fullof "$a" )"
     if grep -q 'route_hedged=' <<<"$full"; then
-        python3 -c 'import re,sys; sys.exit(0 if any("route_hedged=" in c for c in re.findall(r"<!--(.*?)-->",sys.stdin.read(),re.S)) else 1)' <<<"$full" && ok "(L) $a: the legend clause rides with route_hedged=" || no "(L) $a: route_hedged= without its legend clause"
+        if python3 -c 'import re,sys; sys.exit(0 if any("route_hedged=" in c for c in re.findall(r"<!--(.*?)-->",sys.stdin.read(),re.S)) else 1)' <<<"$full"; then ok "(L) $a: the legend clause rides with route_hedged="; else no "(L) $a: route_hedged= without its legend clause"; fi
     else
-        grep -q 'route_hedged' <<<"$full" && no "(L) $a: legend clause without the attribute" || ok "(L) $a: no attribute, no clause"
+        if grep -q 'route_hedged' <<<"$full"; then no "(L) $a: legend clause without the attribute"; else ok "(L) $a: no attribute, no clause"; fi
     fi
     if command -v xmllint >/dev/null 2>&1; then
-        printf '<r>%s</r>' "$full" | xmllint --noout - 2>/dev/null && ok "(L) $a parses" || no "(L) $a: xmllint"
+        if printf '<r>%s</r>' "$full" | xmllint --noout - 2>/dev/null; then ok "(L) $a parses"; else no "(L) $a: xmllint"; fi
     fi
 done
 # (M) MCP path_between: same verdict and rows

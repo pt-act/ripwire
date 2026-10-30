@@ -3819,14 +3819,13 @@ inline std::optional<std::string> pathText( const std::string& root, const std::
               }
               return pathBridge( ing, g, srcDefs, dstMembers, valueRefIndexOf( ix ), *ptBackHops );
           } );
-    const std::vector<NodeId>& ptShownFound = pathShownChain( ptPairs, pth );
-    const PathRouteVerdict     ptRoute      = pathRouteVerdict( ing, g, ptPairs, ptShownFound, srcDefs, dstDefs );   // PATH-ROUTE v2, as on the CLI
-    const std::vector<NodeId>  ptNoRows;
-    const std::vector<NodeId>& ptRows       = ptRoute.refused ? ptNoRows : !ptRoute.proven.empty() ? ptRoute.proven : pth;
-    const std::vector<NodeId>& ptShown      = ptRoute.refused ? ptNoRows : !ptRoute.proven.empty() ? ptRoute.proven : ptShownFound;
-    const std::vector<NodeId>& ptBind = ptRoute.refused ? ptShownFound : ptShown;   // the chain from_p=/to_p= are read off (a refused one still bound its endpoints)
-    const NodeId               srcUsed = ptBind.empty() ? srcDefs.front() : ptBind.front();
-    const NodeId               dstUsed = ptBind.empty() ? dstDefs.front() : ptBind.back();
+    const PathRouteChains      ptChains = pathRouteChains( ing, g, ptPairs, pth, srcDefs, dstDefs );   // PATH-ROUTE v2, as on the CLI
+    const PathRouteVerdict&    ptRoute  = ptChains.verdict;
+    const std::vector<NodeId>& ptRows   = ptChains.rows;
+    const std::vector<NodeId>& ptShown  = ptChains.shown;
+    const std::vector<NodeId>& ptBind   = ptChains.bind;
+    const NodeId               srcUsed  = ptChains.from;
+    const NodeId               dstUsed  = ptChains.to;
     const PathBridge          ptBridge     = pth.empty() ? pathBridge( ing, g, srcDefs, dstDefs, valueRefIndexOf( ix ), *ptBackHops ) : PathBridge{};      // ix2-slice, as on the CLI
     const std::string         ptSinkCallers = pth.empty() && ptGaps.any() && !dstGlob ? pathSinkCallersSelector( ing, *ptBackHops, dstDefs, to, ptSingleRoot, ptRootPrefix ) : std::string();   // HOP1 #6, as on the CLI
     const PathShownMarks      ptMarks      = pathShownMarks( ing, g, ptPairs, ptRows );   // TRACE-EP: the CLI's legend marks, by the same call

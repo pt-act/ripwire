@@ -2772,16 +2772,15 @@ std::optional<int> runPathServed( const MainDispatch& d, std::span<const rw::Nod
                   }
                   return rw::pathBridge( ing, g, srcDefs, dstMembers, *pthValueIdx, *pthBackHops );
               } );
-        const std::vector<NodeId>& pthShownFound = rw::pathShownChain( pthPairs, path );
-        // PATH-ROUTE v2 (src/pathroute.h): a chain stitched from >= 3 by-name hops is refused as the answer (rows withheld, reachable=0
-        // route_hedged=not-proven), >= 2 is hedged on the root; ONE predicate, the MCP twin reads the same
-        const rw::PathRouteVerdict pthRoute = rw::pathRouteVerdict( ing, g, pthPairs, pthShownFound, srcDefs, dstDefs );
-        const std::vector<NodeId>  pthNoRows;
-        const std::vector<NodeId>& pthRows  = pthRoute.refused ? pthNoRows : !pthRoute.proven.empty() ? pthRoute.proven : path;   // the rows the answer prints
-        const std::vector<NodeId>& pthShown = pthRoute.refused ? pthNoRows : !pthRoute.proven.empty() ? pthRoute.proven : pthShownFound;   // the root's from_p=/to_p=/hops=
-        const std::vector<NodeId>& pthBind = pthRoute.refused ? pthShownFound : pthShown;   // the chain from_p=/to_p= are read off (a refused one still bound its endpoints)
-        const NodeId               srcUsed  = pthBind.empty() ? srcDefs.front() : pthBind.front();
-        const NodeId               dstUsed  = pthBind.empty() ? dstDefs.front() : pthBind.back();
+        // PATH-ROUTE v2 (src/pathroute.h pathRouteChains): the chain the answer prints after the route verdict (refused: none; proven-preferred:
+        // the proven chain), shared with the MCP twin
+        const rw::PathRouteChains   pthChains = rw::pathRouteChains( ing, g, pthPairs, path, srcDefs, dstDefs );
+        const rw::PathRouteVerdict& pthRoute  = pthChains.verdict;
+        const std::vector<NodeId>&  pthRows   = pthChains.rows;    // the rows the answer prints
+        const std::vector<NodeId>&  pthShown  = pthChains.shown;   // the root's hops=
+        const std::vector<NodeId>&  pthBind   = pthChains.bind;    // from_p=/to_p= (a refused chain still bound its endpoints)
+        const NodeId                srcUsed   = pthChains.from;
+        const NodeId                dstUsed   = pthChains.to;
         // ix2-slice (IX-2 P1): the hedged bridge — the fewest-crossings chain over declined / value / closure / namesake / slot hops
         const rw::PathBridge     pthBridge = path.empty() ? rw::pathBridge( ing, g, srcDefs, dstDefs, *pthValueIdx, *pthBackHops ) : rw::PathBridge{};
         // HOP1 (#6): to= has a backward hop the provider follows → the root next= is the callers verb on to=, not the gap bodies
