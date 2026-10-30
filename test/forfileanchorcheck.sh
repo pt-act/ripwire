@@ -25,9 +25,13 @@
 #   C2 [G] a dotted Scope.name `Location.go` with NO such file keeps its dotted reading: no page, method `go` of Location in <sigs>
 #   D1 [P] directory: `--for="cmd/syncledger package"` serves <named-dir p="cmd/syncledger"> holding main.go's page
 #   E1 [G] context, not subject: `where STATE used in sync_ledger.py is defined` carries no page
+#   E3 [P] the same context question still ANCHORS the bare basename (mention.h (a0)): mention_anchored= and a tools/sync_ledger.py
+#          row in the top 3 (base: the dotted [sync_ledger, py] reading anchored nothing)
+#   H1 [P] a bare C basename names its file for the decl/impl partner row too: `--for=widget.c` carries <hdr p="widget.h" of="widget.c"/>
 #   E2 [G] a stem that IS a symbol's name (`run_all`, def run_all in run_all.py): no stem anchor, no page
 #   F1 [P] in=0 hedge: the clause says in=0 is NOT unused; the uncalled def carries in="0"; by= names the caller's file
 #   R1 [P] redaction: a secret in the top-level text is redacted (the AKIA key is absent from the answer)
+#   K2 [P] the anchor cap discloses: a subject naming three files pages two and says <named-cut total="3" shown="2"/>
 #   K1 [P] the top-level cap discloses: a 120-line script shows at most 40 lines and <top_cut … rest=>
 #   N1 [G] no page with RIPWIRE_NO_FILE_PAGE=1, nor under --json
 #   L1 [P] the clause rides in both dialects and defines every attribute the page elements carry (whole-name search in the clause)
@@ -44,7 +48,7 @@ BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"
 echo "forfileanchorcheck: BIN=$BIN"
 fail=0
-ok(){ printf '  PASS  %s\n' "$*"; }
+ok(){ printf '  PASS  %s\n' "$*" || { fail=1; printf '  FAIL  could not write the PASS line for: %s\n' "$*"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 2; }
@@ -91,8 +95,13 @@ w("ts/scripts/sync-ledger.ts", js)
 # go: a directory anchor
 w("go/cmd/syncledger/main.go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(helper())\n}\n\nfunc helper() string {\n\treturn \"x\"\n}\n")
 w("go/go.mod", "module example.com/x\n\ngo 1.21\n")
+w("c/src/widget.c", "#include \"widget.h\"\nint widget_area(int w, int h) {\n    return w * h;\n}\n")
+w("c/src/widget.h", "int widget_area(int w, int h);\n")
+w("c/src/main.c", "#include \"widget.h\"\nint main(void) {\n    return widget_area(2, 3);\n}\n")
 # the dotted Scope.name near miss (no file Location.go anywhere)
 w("ts2/src/location.ts", "export class Location {\n  go(path: string): void {\n    history.pushState(null, '', path);\n  }\n}\n")
+for n in ("alpha", "beta", "gamma"):
+    w("multi/%s_tool.py" % n, "def %s_run():\n    return 1\n" % n)
 # K1: a long script
 w("long/run-deploy.sh", "#!/bin/sh\n" + "".join('echo "step %d"\n' % i for i in range(120)))
 PY
@@ -159,6 +168,18 @@ else no "D1 directory anchor cmd/syncledger: no named-dir page"; fi
 run py --for="where STATE used in sync_ledger.py is defined" > "$T/e1.xml"
 if ! has "$T/e1.xml" '<named-file'; then ok "E1 a file named as context carries no page"
 else no "E1 a file named as context got a page"; fi
+top3="$( python3 - "$T/e1.xml" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read()
+print(" ".join(p for p, r in re.findall(r'<d [^>]*?p="([^"]*)"[^>]*? r="(\d+)"', s) if int(r) <= 3))
+PY
+)"
+if has "$T/e1.xml" 'mention_anchored="' && case " $top3 " in *" tools/sync_ledger.py "*) true ;; *) false ;; esac; then
+    ok "E3 the context basename still anchors its file (top 3: $top3)"
+else no "E3 the context basename sync_ledger.py anchored nothing (top 3: $top3)"; fi
+run c --for=widget.c > "$T/h1.xml"
+if has "$T/h1.xml" '<hdr p="src/widget.h" of="src/widget.c"/>'; then ok "H1 a bare C basename gets its header partner row"
+else no "H1 no <hdr> partner row for the bare basename widget.c"; fi
 run py --for=run_all > "$T/e2.xml"
 if ! has "$T/e2.xml" '<named-file' && ! has "$T/e2.xml" 'file subject:'; then ok "E2 a stem that is a symbol's name stays a name"
 else no "E2 run_all (a function's name) was read as a file stem"; fi
@@ -180,6 +201,11 @@ PY
 if [ "$shown" -le 40 ] && grep -qE '<top_cut top_lines="121" shown="40" rest="41-121"/>' "$T/k1.xml"; then ok "K1 the 40-line cap discloses top_cut (shown $shown)"
 else no "K1 top-level cap: shown=$shown lines or no top_cut disclosure"; fi
 
+run multi --for="alpha_tool.py beta_tool.py gamma_tool.py" > "$T/k2.xml"
+if has "$T/k2.xml" '<named-cut total="3" shown="2"/>' && [ "$( grep -o '<named-file ' "$T/k2.xml" | wc -l | tr -d ' ' )" = 2 ]; then
+    ok "K2 the anchor cap pages two files and discloses the third"
+else no "K2 three named files: no named-cut disclosure or not two pages"; fi
+
 # ── N: postures without the page ────────────────────────────────────────────────────────────────────────────────────────────
 ( cd "$T/py" && RIPWIRE_NO_FILE_PAGE=1 HOME="$H" TMPDIR="$T/" "$BIN" "$T/py" --no-cache --for=sync_ledger < /dev/null 2>/dev/null ) > "$T/n1.xml"
 run py --for=sync_ledger --json > "$T/n2.json"
@@ -188,7 +214,9 @@ else no "N1 a page rode under the kill switch or --json"; fi
 
 # ── L: the clause defines what the page carries ─────────────────────────────────────────────────────────────────────────────
 run py --for=sync_ledger --legend=full > "$T/l1.xml"
-for f in "$T/b1.xml" "$T/l1.xml" "$T/c1.xml" "$T/d1.xml" "$T/k1.xml"; do
+run long --for=run-deploy.sh --legend=full > "$T/l1k.xml"   # the full dialect on a cut page (top_cut) — each dialect, each element
+run py --for=util.py --legend=full > "$T/l1c.xml"
+for f in "$T/b1.xml" "$T/l1.xml" "$T/c1.xml" "$T/d1.xml" "$T/k1.xml" "$T/k2.xml" "$T/l1k.xml" "$T/l1c.xml"; do
     if python3 - "$f" <<'PY'
 import re, sys
 s = open(sys.argv[1]).read()
@@ -214,7 +242,7 @@ if cmp -s "$T/a1.xml" "$T/x1.xml"; then ok "X1 deterministic"; else no "X1 two r
 if command -v xmllint >/dev/null 2>&1; then
     bad=0
     for f in "$T"/a1.xml "$T"/b1.xml "$T"/c1.xml "$T"/d1.xml "$T"/k1.xml "$T"/l1.xml; do xmllint --noout "$f" 2>/dev/null || { bad=1; echo "    not well-formed: $f"; }; done
-    [ "$bad" -eq 0 ] && ok "X2 xmllint well-formed" || no "X2 an answer is not well-formed"
+    if [ "$bad" -eq 0 ]; then ok "X2 xmllint well-formed"; else no "X2 an answer is not well-formed"; fi
 else echo "  SKIP  X2 xmllint not installed"; fi
 if python3 - "$T/l1.xml" "$T/b1.xml" <<'PY'
 import re, sys

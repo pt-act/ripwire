@@ -605,6 +605,10 @@ inline std::string renderForFilePage( const IngestResult& ing, const Graph& g, s
             out += "</named-files>";
         }
     }
+    if( anchors.size() > kForFilePageMaxAnchors )   // a subject naming more files than this pages: the cut is said, never silent
+    {
+        out += std::format( "<named-cut total=\"{}\" shown=\"{}\"/>", anchors.size(), kForFilePageMaxAnchors );
+    }
     return out;
 }
 
@@ -678,11 +682,12 @@ inline constexpr std::string_view kForFilePageLegend =
     "every caller bound by name alone; next= the graph query listing the file's defs main does not reach; top l= e=: the file's "
     "top-level text outside every def, top_cut top_lines= shown= rest=: of the top-level lines, those not shown (in the file; no verb serves them); "
     "named-files n= total=: the name matches several files, f p= defs= each, none picked; named-dir p= files=: that directory's code files; "
-    "tier=test|generated|vendored; unread=1 the file could not be read; shown= capped=1 the list was cut";
+    "tier=test|generated|vendored; unread=1 the file could not be read; named-cut total= shown=: the subject names more files than were paged; "
+    "shown= capped=1 the list was cut";
 inline constexpr std::string_view kForCompactFilePageLegend =
     "; named-file p= lines= defs=: the named file, defs in line order; s t= n= l= e= in= callers (0: none indexed, NOT unused) by= "
     "their files, by_total= all, via=name; next= graph query of defs main misses; top l= e=: top-level text, top_cut top_lines= "
     "shown= rest=: lines not shown; named-files n= total=: several files, f p= defs=, none picked; named-dir p= files=; "
-    "tier=test|generated|vendored; unread=1; shown= capped=1 cut";
+    "tier=test|generated|vendored; unread=1; named-cut total= shown=: more files named than paged; shown= capped=1 cut";
 
 } // namespace rw
