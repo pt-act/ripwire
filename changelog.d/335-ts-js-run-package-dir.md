@@ -1,8 +1,8 @@
 ### Fixed — TS/JS `run=` runs from the package directory (#335, #442, thanks @llvm-x86)
 
 A TS/JS test in a subdirectory package got a `run=` that could not run. The command was root-relative. Run from the root,
-the runner found no package config. Run from the package, the path was root-relative. Now the command starts with
-`cd <package> &&`, and the path after it is package-relative. A multi-root run has no `root=` and keeps the plain command. Paste it in a fresh shell at the root. The `cd` stays in a shell that is reused.
+the runner found no package config. Run from the package, the path was root-relative. Now the command is a subshell,
+`(cd <package> && <runner> <path>)`, and the path after the `cd` is package-relative. The subshell keeps the `cd` from outliving the command, so a shell that keeps its directory between calls (an agent's) starts the next row at the root again. A multi-root run has no `root=` and keeps the plain command. Paste it from the shell at the root.
 
 A bracketed path, such as a Next.js route (`app/[slug]/page.test.ts`), had `--` before it. vitest reads `--` as the end
 of its options and drops the file filter, so the row ran the whole suite. vitest and jest now get one quoted path.

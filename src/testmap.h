@@ -1328,7 +1328,8 @@ private:
     /// #335: the TS/JS run= for one test file, given its verb (resolveJsVerb) and how many directories the
     /// manifest walk climbed to find the deciding manifest (`climbs`, npos = none decided). vitest and jest find a
     /// package's config, path aliases and node_modules from the package directory, so a package BELOW root= is
-    /// entered with `cd <pkg> && `, and the path after it is package-relative. Paste it in a fresh shell at root= (the cd stays in a reused shell).
+    /// entered in a subshell, `(cd <pkg> && <runner> <path>)`, and the path after the cd is package-relative. The parentheses keep
+    /// the cd from outliving the command, so a second pasted row still starts at root= (an agent shell that keeps its cwd between calls).
     /// A package AT root= needs no cd, and a multi-root run has no root= to cd from, so both keep the plain spelling.
     /// vitest and jest take the path as a substring filter, so it is one quoted argument with no `--` (which ended
     /// their options and dropped the filter, so a bracketed route ran the whole suite). A path a CLI would read as
@@ -1351,7 +1352,7 @@ private:
             rel                           = p.substr( pkgDir.size() + 1 );
             // a directory named "-x" would read as a cd option; "./" makes it a path
             const std::string dir = pkgDir.front() == '-' ? "./" + std::string( pkgDir ) : std::string( pkgDir );
-            cd                    = "cd " + token( dir ) + " && ";
+            cd                    = "(cd " + token( dir ) + " && ";
         }
         if( rel.empty() || rel.front() == '-' )
         {
@@ -1377,14 +1378,14 @@ private:
             }
             arg = std::move( esc );
         }
-        return cd + std::string( verb ) + " " + token( arg );
+        return cd + std::string( verb ) + " " + token( arg ) + ( cd.empty() ? "" : ")" );
     }
 
     /// Validate a candidate script and format its disk path as one shell argument.
     /// runnerFile must have a supported extension; Python without main-guard or pytest evidence, or TS/JS
     /// without a package.json naming vitest/jest/node --test, yields empty (never a guessed default).
     /// Commands are root-relative only for single-root scans, with quoting and option separation as needed. A TS/JS
-    /// package below root= is entered with a `cd` prefix (spellJsRun).
+    /// package below root= is entered in a `(cd <pkg> && ...)` subshell (spellJsRun).
     std::string spellUncached( std::uint32_t runnerFile ) const
     {
         const std::string& disk = diskPath( *ing_, runnerFile );

@@ -622,17 +622,17 @@ fxts "$Z/z26" 'namespace N { declare const a: number; }
 export function bounded( t: string ): string { return t; }'
 zwant '(z26) R2: a namespace holding only a declare statement' "$Z/z26" src/bounded.ts run_unknown
 
-# (n1) #335: a TS/JS package BELOW root= runs from its own directory. run= starts with `cd <pkg> &&` (still
+# (n1) #335: a TS/JS package BELOW root= runs from its own directory. run= is `(cd <pkg> && ...)`, a subshell (still
 #      pasteable from root=), and the path after it is package-relative. Before the fix it was `npx vitest run
 #      web/src/lib.test.ts` from root, which resolves no package config and cannot run from either directory.
 N1="$( runjs testgatenestedfix 'web/src/lib.ts' )"; N1EC="$( rcjs testgatenestedfix 'web/src/lib.ts' )"
-{ [ "$N1EC" = 4 ] && printf '%s' "$N1" | grep -qF 'run="cd web &amp;&amp; npx vitest run src/lib.test.ts"'; } \
-    && ok '(n1) #335: nested package -> run="cd web &amp;&amp; npx vitest run src/lib.test.ts"' \
+{ [ "$N1EC" = 4 ] && printf '%s' "$N1" | grep -qF 'run="(cd web &amp;&amp; npx vitest run src/lib.test.ts)"'; } \
+    && ok '(n1) #335: nested package -> run="(cd web &amp;&amp; npx vitest run src/lib.test.ts)"' \
     || no "(n1) #335 nested package run= not package-relative (exit=$N1EC): $N1"
 # (n2) #335: a bracketed path (a Next.js dynamic route) is one quoted argument with NO `--`. vitest reads `--`
 #      as the end of its options and drops the file filter, so the row ran the whole suite.
 N2="$( runjs testgatenestedfix 'web/app/[slug]/page.ts' )"; N2EC="$( rcjs testgatenestedfix 'web/app/[slug]/page.ts' )"
-{ [ "$N2EC" = 4 ] && printf '%s' "$N2" | grep -qF "run=\"cd web &amp;&amp; npx vitest run &apos;app/[slug]/page.test.ts&apos;\"" \
+{ [ "$N2EC" = 4 ] && printf '%s' "$N2" | grep -qF "run=\"(cd web &amp;&amp; npx vitest run &apos;app/[slug]/page.test.ts&apos;)\"" \
       && ! printf '%s' "$N2" | grep -qF -e ' -- '; } \
     && ok "(n2) #335: bracketed nested path -> quoted filter, no --" \
     || no "(n2) #335 bracketed path still uses -- or is not quoted (exit=$N2EC): $N2"
@@ -651,8 +651,8 @@ fi
 
 # (n3) #335: a nested node:test package gets the same cd form, its path package-relative.
 N3="$( runjs testgatenestedfix 'node/src/d.mjs' )"; N3EC="$( rcjs testgatenestedfix 'node/src/d.mjs' )"
-{ [ "$N3EC" = 4 ] && printf '%s' "$N3" | grep -qF 'run="cd node &amp;&amp; node --test src/d.test.mjs"'; } \
-    && ok '(n3) #335: nested node:test package -> run="cd node &amp;&amp; node --test src/d.test.mjs"' \
+{ [ "$N3EC" = 4 ] && printf '%s' "$N3" | grep -qF 'run="(cd node &amp;&amp; node --test src/d.test.mjs)"'; } \
+    && ok '(n3) #335: nested node:test package -> run="(cd node &amp;&amp; node --test src/d.test.mjs)"' \
     || no "(n3) #335 nested node:test run= not package-relative (exit=$N3EC): $N3"
 # (n4) #335: node's runner globs its file arguments, so a bracketed path has no spelling that runs it (`c[1]`
 #      matched no file; node exits 1). The honest answer is no run=, which is run_unknown.
@@ -683,7 +683,7 @@ N8A="$( n8run web/-top/t.ts )"; N8B="$( n8run -pkg/src/m.ts )"; N8C="$( n8run jp
 [ -n "$N8A" ] && printf '%s' "$N8A" | grep -qF '<t p="web/-top/t.test.ts" partner="1" hops="1" run_unknown="1"/>' \
     && ok "(n8a) #335: a package-relative path starting with - gets run_unknown" \
     || no "(n8a) #335 a leading-dash path got a command: $N8A"
-[ -n "$N8B" ] && printf '%s' "$N8B" | grep -qF 'run="cd ./-pkg &amp;&amp; npx vitest run src/m.test.ts"' \
+[ -n "$N8B" ] && printf '%s' "$N8B" | grep -qF 'run="(cd ./-pkg &amp;&amp; npx vitest run src/m.test.ts)"' \
     && ok "(n8b) #335: a directory starting with - is entered as ./-pkg" \
     || no "(n8b) #335 a leading-dash directory is not ./-prefixed: $N8B"
 [ -n "$N8C" ] && printf '%s' "$N8C" | grep -qF 'npx jest &apos;src/j\.test\.ts&apos;' \
@@ -691,7 +691,8 @@ N8A="$( n8run web/-top/t.ts )"; N8B="$( n8run -pkg/src/m.ts )"; N8C="$( n8run jp
     || no "(n8c) #335 jest below root= kept a regex dot: $N8C"
 N8M="$( perl -e 'alarm 15; exec @ARGV' "$BIN" "$ROOT/test/testgatenestedfix" "$ROOT/test/testgatevitestfix" --affected=web/src/lib.ts --no-cache 2>/dev/null )"
 { printf '%s' "$N8M" | grep -qF 'npx vitest run ' && printf '%s' "$N8M" | grep -qF 'web/src/lib.test.ts' \
-      && ! printf '%s' "$N8M" | grep -qF 'run="cd '; } \
+      && ! printf '%s' "$N8M" | grep -qF 'run="cd ' \
+      && ! printf '%s' "$N8M" | grep -qF 'run="(cd '; } \
     && ok "(n8d) #335: a multi-root run keeps the plain command, no cd" \
     || no "(n8d) #335 multi-root run printed a cd: $N8M"
 
@@ -699,8 +700,8 @@ N8M="$( perl -e 'alarm 15; exec @ARGV' "$BIN" "$ROOT/test/testgatenestedfix" "$R
 #      x.test.helper.ts fails on both runners and a bare __tests__/ file fails on vitest ("No test files
 #      found", exit 1): run_unknown="1". jest's own __tests__/ default keeps its command.
 N6="$( runjs testgatenestedfix 'web/src/shape.ts' )"; N6J="$( runjs testgatenestedfix 'jest/src/hshape.ts' )"
-{ printf '%s' "$N6" | grep -qF 'run="cd web &amp;&amp; npx vitest run src/shape.test.ts"' \
-      && ! printf '%s' "$N6" | grep -qF 'run="cd web &amp;&amp; npx vitest run src/shape.test.helper.ts"' \
+{ printf '%s' "$N6" | grep -qF 'run="(cd web &amp;&amp; npx vitest run src/shape.test.ts)"' \
+      && ! printf '%s' "$N6" | grep -qF 'run="(cd web &amp;&amp; npx vitest run src/shape.test.helper.ts)"' \
       && ! printf '%s' "$N6" | grep -qF 'npx vitest run src/__tests__/shape.ts' \
       && printf '%s' "$N6" | grep -qF 'web/src/shape.test.helper.ts' \
       && printf '%s' "$N6" | grep -qF 'web/src/__tests__/shape.ts' \
@@ -716,6 +717,18 @@ N7="$( runjs testgatenestedfix '__tests__/pkg/src/up.ts' )"
       && ! printf '%s' "$N7" | grep -qF 'npx jest'; } \
     && ok '(n7) #330: a __tests__ directory above the package does not make a jest target' \
     || no "(n7) #330 __tests__ above the package read as jest's default: $N7"
+
+# (n9) #442 (@llvm-x86): the cd is a SUBSHELL, so it does not outlive the command. Run the printed row with its runner
+#      replaced by pwd, then pwd again, in one shell started at root=: the first line is the package directory, the second
+#      is root= (an agent shell that keeps its cwd between calls would otherwise start the next row inside web/).
+N9R="$( printf '%s' "$N1" | sed -n 's/.* run="\(([^"]*)\)".*/\1/p' | head -1 | sed 's/&amp;/\&/g' )"
+N9C="${N9R%% && *} && pwd)"
+N9O="$( cd "$ROOT/test/testgatenestedfix" && bash -c "$N9C; pwd" 2>&1 )"
+{ case "$N9R" in "(cd web && "*")") true ;; *) false ;; esac \
+      && [ "$( printf '%s\n' "$N9O" | sed -n 1p )" = "$ROOT/test/testgatenestedfix/web" ] \
+      && [ "$( printf '%s\n' "$N9O" | sed -n 2p )" = "$ROOT/test/testgatenestedfix" ]; } \
+    && ok '(n9) #442: the cd is a subshell: the next command still starts at root=' \
+    || no "(n9) #442 the cd leaked or the row is not a subshell: ROW=$N9R OUT=$N9O"
 
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILURES ABOVE"
 exit $fail
