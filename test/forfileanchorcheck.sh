@@ -44,6 +44,7 @@
 #   M3 [P] (primary C3) the page has one 16 KB bound: a 7-file directory and two directories stop at a file boundary, bytes_capped=1
 #   M4 [P] (primary N2) a minified one-line file with no <file-scope> row says top_cut shown=0, never an empty page
 #   K3-K5 [P] (primary N1) the def-row cap (41 defs), the dir-file cap (7 files) and the list cap (9 same-named files) are disclosed
+#   H2 [P] (lens N1) a C header's page carries no next=; N3 [P] (lens N3) a path naming a .md file pages nothing
 #   T1 [P] (primary N1) tier="test" on a listed file; by_total= beside by=
 #   L1 [P] the clause rides in both dialects and defines every attribute the page elements carry (whole-name search in the clause)
 #   X1 [G] determinism  X2 [G] xmllint well-formed (when xmllint exists)  X3 [G] no "--" inside the legend comment
@@ -142,6 +143,9 @@ for f in range(1, 8):
 for d in range(1, 10):
     w("k5/pkg%d/dup.py" % d, "def dup_%d():\n    return %d\n" % (d, d))
 # T1: a test twin (tier=) and a def called from four files (by_total=)
+# H2/N3: a C header carries no next= (its prototypes' callers bind to the definitions); a path naming a prose file is no page
+w("d7/docs/guide.md", "# Guide\n\n## Install\n\ntext\n")
+w("d7/src/guide.py", "def guide():\n    return 1\n")
 w("t1/pkg/core.py", "def shared():\n    return 1\n")
 w("t1/tests/core.py", "def test_shared():\n    return 1\n")
 for i in range(1, 5):
@@ -264,6 +268,13 @@ else no "M1/M2 next= replay rc=$rc: unused_one missing or emit listed as unreach
 run m2 --for=run.sh --legend=full > "$T/m2f.xml"; run m2 --for=run.sh --legend=compact > "$T/m2c.xml"
 if has "$T/m2f.xml" 'within 16 calls' && has "$T/m2f.xml" 'walk cap' && has "$T/m2c.xml" 'within 16 calls'; then ok "M2 the 16-call walk cap is said, full and compact"
 else no "M2 the legend states reachability without its 16-call cap"; fi
+
+run c --for=widget.h > "$T/h2.xml"
+if has "$T/h2.xml" '<named-file p="src/widget.h"' && ! grep -qE '<named-file p="src/widget.h"[^>]* next=' "$T/h2.xml"; then ok "H2 a header's page carries no next="
+else no "H2 widget.h: no page, or a next= that calls its prototypes unreached"; fi
+run d7 --for=docs/guide.md > "$T/n3.xml"
+if ! has "$T/n3.xml" '<named-file p="docs/guide.md"' && ! has "$T/n3.xml" '<f p="docs/guide.md"'; then ok "N3 a path naming a prose file pages nothing"
+else no "N3 docs/guide.md was paged or listed"; fi
 
 # ── M3: one byte bound on the page ──────────────────────────────────────────────────────────────────────────────────────────────
 pagebytes(){ python3 - "$1" <<'PY'
