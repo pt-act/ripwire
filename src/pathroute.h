@@ -1,0 +1,138 @@
+#pragma once
+// PATH-ROUTE v2 — THE ROUTE VERDICT of a reached --path answer: is the one chain the search found PROVEN, or stitched together from
+// calls bound by name alone? ONE predicate, read by both transports (verbs_navigate.h runPathServed = the CLI --path and the --for
+// <graph_verb> block; mcpverbs.h pathText = MCP path_between and the MCP `for` graph-verb block), so they cannot disagree.
+//
+// THE DEFECT (LD-2 django-06/-07): shortestPathAny is a plain BFS over every out-edge, proven and by-name alike, so the fewest-hops
+// chain can be a shortcut through several via="name" hops whose receiver nothing proves (django-06: 12 hops, 5 by name, through the
+// prefetch code; django-07: Model._save_table -> QuerySet.aggregate -> ... by name). The answer printed it as reachable=1 with
+// nothing on the root saying so, and an agent trusts it over the true route it never sees.
+//
+// WHY THE EMITTER, NOT THE SEARCH (Stage 0, reports/path-route-v2.md): neither row has a route over proven edges only — the true
+// chains cross a class-valued attribute (`self._iterable_class(self)`, no edge at all) and by-name receivers (`manager._insert`,
+// `compiler.execute_sql`) — so a proven-first search would find the same by-name chain. The honest fix is the verdict.
+//
+// PROVEN FIRST: a chain of kPathRouteHedgeNameHops or more by-name hops is checked against the proven-only search (shortestPathAny
+// provenOnly: the same BFS skipping by-name edges, over the same endpoint definitions); when one exists it is the answer
+// (route_hedged="proven-preferred": a shorter chain exists only by name), so neither the hedge nor the refusal ever hides a proven route.
+//
+// THE RULE (thresholds measured over every reached --path / <graph_verb> chain in S1, MF1-DEV, MF1-DEV-2, LARGE-DEV, LD-2: no
+// single-chain answer outside the two target rows carries more than 1 by-name hop):
+//   * fewer than kPathRouteHedgeNameHops by-name hops: printed as before (each hop's via="name" row is its own hedge);
+//   * kPathRouteHedgeNameHops or more: printed, HEDGED on the root (route_hedged="name-stitched" route_by_name= route_cands=);
+//   * kPathRouteRefuseNameHops or more AND more than one candidate chain (route_cands > 1): REFUSED as the answer — the chain's rows
+//     are not printed (no wrong-branch hop rides in a route), the root says reachable="0" route_hedged="not-proven" (NOT "no path":
+//     the search found one, nothing proves it) and next= follows from='s callees.
+// Never a proven edge dropped from the search; never counted in reaches= / any proven count. A pairs answer (several definition
+// pairs, pathpairs.h) keeps its own per-pair hedged= ranking and is not judged here.
+
+#include "graph.h"
+#include "hopbody.h"     // byNameCandidates — the hop hedge's cands= (how many same-named definitions a by-name call could bind)
+#include "model.h"
+#include "nextverb.h"    // nextAttrXml
+#include "pathpairs.h"   // PathPairs, pathPairSelector
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace rw
+{
+
+inline constexpr std::size_t   kPathRouteHedgeNameHops  = 2;        // knob (knob-census ADDENDUM): by-name hops that hedge the root
+inline constexpr std::size_t   kPathRouteRefuseNameHops = 3;        // knob: by-name hops (with cands > 1) that refuse the chain
+inline constexpr std::uint64_t kPathRouteCandsCeiling   = 1000000;  // route_cands= saturates here (a product of per-hop counts)
+
+struct PathRouteVerdict
+{
+    std::size_t   hops     = 0;   // the judged chain's hops (0 = nothing judged)
+    std::size_t   byName   = 0;   // its via="name" hops
+    std::uint64_t cands    = 1;   // product of each by-name hop's cands= (saturating): how many equally plausible chains it stands for
+    bool          hedged   = false;
+    bool          refused  = false;
+    std::vector<NodeId> proven;   // non-empty: the proven-only chain printed instead of the name-stitched one
+};
+
+// THE ONE PREDICATE. `chain` is the chain the answer would print (pathShownChain); a pairs answer is not judged.
+inline PathRouteVerdict pathRouteVerdict( const IngestResult& ing, const Graph& g, const PathPairs& pp, std::span<const NodeId> chain,
+                                          const std::vector<NodeId>& srcDefs, const std::vector<NodeId>& dstDefs )
+{
+    PathRouteVerdict v;
+    if( pp.active() || chain.size() < 2 )
+    {
+        return v;
+    }
+    v.hops = chain.size() - 1;
+    for( std::size_t i = 1; i < chain.size(); ++i )
+    {
+        if( edgeNameOnly( g, chain[i - 1], chain[i] ) )
+        {
+            ++v.byName;
+            const std::uint64_t k = byNameCandidates( ing, g, chain[i - 1], chain[i] );   // >= 1
+            v.cands               = v.cands > kPathRouteCandsCeiling / k ? kPathRouteCandsCeiling : std::min( kPathRouteCandsCeiling, v.cands * k );
+        }
+    }
+    if( v.byName < kPathRouteHedgeNameHops )
+    {
+        return v;
+    }
+    v.proven = shortestPathAny( g, srcDefs, dstDefs, /*provenOnly=*/true );
+    if( !v.proven.empty() )
+    {
+        return v;   // proven-preferred: printed instead, never hedged nor refused
+    }
+    v.hedged  = true;
+    v.refused = v.byName >= kPathRouteRefuseNameHops && v.cands > 1;
+    return v;
+}
+
+// The root attributes the verdict adds ("" when it neither hedges nor refuses). A refused answer names from='s callees in next=
+// unless the root already carries a next= (`hasNext`).
+inline std::string pathRouteRootAttrs( const IngestResult& ing, const PathRouteVerdict& v, NodeId from, bool hasNext, bool singleRoot,
+                                       std::string_view rootPrefix )
+{
+    if( !v.proven.empty() )
+    {
+        return " route_hedged=\"proven-preferred\" route_len=\"" + std::to_string( v.hops ) + "\" route_by_name=\"" + std::to_string( v.byName ) + "\"";
+    }
+    if( !v.hedged && !v.refused )
+    {
+        return {};
+    }
+    std::string out = v.refused ? " route_hedged=\"not-proven\" route_len=\"" + std::to_string( v.hops ) + "\"" : std::string( " route_hedged=\"name-stitched\"" );
+    out += " route_by_name=\"" + std::to_string( v.byName ) + "\" route_cands=\"" + std::to_string( v.cands ) + "\"";
+    if( v.refused && !hasNext && from < ing.symbols.size() )
+    {
+        out += nextAttrXml( "--callees=" + pathPairSelector( ing, from, singleRoot, rootPrefix ) );
+    }
+    return out;
+}
+
+// present-only (the full dialect's spelling; compactlegend.h carries the compact one). No `--` inside: it rides in an XML comment.
+inline std::string_view pathRouteLegend( const PathRouteVerdict& v ) noexcept
+{
+    if( !v.proven.empty() )
+    {
+        return "route_hedged=proven-preferred route_len=N route_by_name=K: the shortest chain found is N hops, K of them bound by name alone; "
+               "a chain over proven call edges only exists and is the one shown (hops= counts it). ";
+    }
+    if( v.refused )
+    {
+        return "route_hedged=not-proven route_len=N route_by_name=K route_cands=P: the only chain the search found is N hops, K of them "
+               "bound by name alone (receiver unproven), standing for P same-named candidate chains, so it is NOT printed as the answer: "
+               "reachable=0 here means not proven, never no route, and the true route may be another; next= follows from='s callees "
+               "(the callers verb walks back from to=; connect on from=,to= shows the edges with their via= marks). ";
+    }
+    if( v.hedged )
+    {
+        return "route_hedged=name-stitched route_by_name=K route_cands=P: K of the shown chain's hops are bound by name alone (the via=name "
+               "rows; receiver unproven), standing for P same-named candidate chains: the route is a hedge, and the true route may be another. ";
+    }
+    return "";
+}
+
+}   // namespace rw

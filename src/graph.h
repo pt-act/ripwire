@@ -15650,7 +15650,9 @@ inline std::vector<float> diffTeleport( const IngestResult& ing, const std::vect
 // ---- shortest directed call-path (--path=SRC,DST): BFS over out-edges; empty if unreachable -----------
 // Deterministic: out-edges are stored ascending by target id within each source, so BFS expands in a fixed
 // order. Returns the node sequence src..dst inclusive; {src} if src==dst; empty if dst is unreachable.
-inline std::vector<NodeId> shortestPathAny( const Graph& g, const std::vector<NodeId>& srcs, const std::vector<NodeId>& dsts )
+// provenOnly (PATH-ROUTE v2, src/pathroute.h): skip every edge bound by name alone (Graph::outNameOnly kind kEdgeName) — the
+// proven-only search a name-stitched chain is checked against; the default walks every out-edge, as it always has.
+inline std::vector<NodeId> shortestPathAny( const Graph& g, const std::vector<NodeId>& srcs, const std::vector<NodeId>& dsts, bool provenOnly = false )
 {
     const std::size_t N = g.wOutDeg.size();
     if( srcs.empty() || dsts.empty() )
@@ -15689,7 +15691,7 @@ inline std::vector<NodeId> shortestPathAny( const Graph& g, const std::vector<No
         for( std::uint32_t k = g.outOff[u]; k < g.outOff[u + 1]; ++k )
         {
             const NodeId v = g.outTargets[k];
-            if( seen[v] )
+            if( seen[v] || ( provenOnly && k < g.outNameOnly.size() && edgeKindByte( g.outNameOnly[k] ) == kEdgeName ) )
             {
                 continue;
             }
