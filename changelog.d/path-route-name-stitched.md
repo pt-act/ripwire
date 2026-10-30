@@ -10,8 +10,9 @@ and nothing on the answer said so. One shared verdict now judges the chain a sin
   printed instead, with `route_hedged="proven-preferred" route_len= route_by_name=` describing the shorter by-name one.
 - 2 or more by-name hops and no proven chain: printed as before, hedged on the root with
   `route_hedged="name-stitched" route_by_name="K" route_cands="P"` (K by-name hops, P the product of their same-named candidates).
-- 4 or more by-name hops with more than one candidate chain and no proven chain: refused as the answer (3 is only hedged: on CPython, `--path=asyncio.run,Handle._run` is a true chain with 3 by-name hops). The root says
-  `reachable="0" hops="0" route_hedged="not-proven" route_len="N"`, no hop rows print, and `next=` follows `from=`'s callees. The
-  legend says reachable=0 here means "not proven", never "no route".
+- 4 or more by-name hops and `route_cands` of 64 or more (and no proven chain): refused as the answer (3 is only hedged: on CPython, `--path=asyncio.run,Handle._run` is a true chain with 3 by-name hops, and a true TypeScript or Go dependency-injection chain through interfaces carries 2 to 16 candidates, so it is hedged and printed). The root says
+  `reachable="0" hops="0" route_hedged="not-proven" route_len="N"`, no hop rows print, and `next=` follows `from=`'s callees (quoted, so a path with a space pastes into a shell). The
+  legend says reachable=0 here means "not proven", never "no route". `route_cands` counts in-repo same-named definitions along the route; a by-name call on a builtin or external receiver is not counted, so a low count is no proof.
+- 4 or more by-name hops below that count: printed and hedged, and the legend says the chain is unlikely; `next=` names the step that verifies it.
 
-A chain with at most one by-name hop, and an answer listing several definition pairs, print exactly as before.
+A chain with at most one by-name hop prints exactly as before. An answer listing several definition pairs hedges its first pair's chain (`route_hedged="name-stitched"`), and is never refused. The compact `path` legend now reads "reachable=0 hops=0 when none shown", so it no longer contradicts a refusal.

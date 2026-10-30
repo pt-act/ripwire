@@ -30,7 +30,8 @@
 //     the search found one, nothing proves it) and next= follows from='s callees.
 // route_cands counts IN-REPO same-named definitions only: a by-name call on a builtin or external receiver (`stack.pop()` bound to the
 // repo's one `def pop`) counts 1, so a low count is never proof. Never a proven edge dropped from the search; never counted in
-// reaches= / any proven count. A pairs answer (several definition pairs, pathpairs.h) keeps its own per-pair hedged= ranking and is not judged here.
+// reaches= / any proven count. A pairs answer (several definition pairs, pathpairs.h) keeps its own per-pair hedged= ranking and its
+// first pair's chain gets the HEDGE only (its rows are the listing; there is no single chain to refuse).
 
 #include "graph.h"
 #include "hopbody.h"     // byNameCandidates — the hop hedge's cands= (how many same-named definitions a by-name call could bind)
@@ -64,12 +65,13 @@ struct PathRouteVerdict
     std::vector<NodeId> proven;   // non-empty: the proven-only chain printed instead of the name-stitched one
 };
 
-// THE ONE PREDICATE. `chain` is the chain the answer would print (pathShownChain); a pairs answer is not judged.
+// THE ONE PREDICATE. `chain` is the chain the answer would print (pathShownChain); in a pairs answer that is the first pair's chain,
+// which is hedged (never refused, never replaced by a proven chain: the pairs ranking already puts the fewest-hedged pair first).
 inline PathRouteVerdict pathRouteVerdict( const IngestResult& ing, const Graph& g, const PathPairs& pp, std::span<const NodeId> chain,
                                           const std::vector<NodeId>& srcDefs, const std::vector<NodeId>& dstDefs )
 {
     PathRouteVerdict v;
-    if( pp.active() || chain.size() < 2 )
+    if( chain.size() < 2 || ( pp.active() && pp.pairs.front().isBridge() ) )   // a bridge is already marked bridge=1, never a path
     {
         return v;
     }
@@ -87,13 +89,16 @@ inline PathRouteVerdict pathRouteVerdict( const IngestResult& ing, const Graph& 
     {
         return v;
     }
-    v.proven = shortestPathAny( g, srcDefs, dstDefs, /*provenOnly=*/true );
-    if( !v.proven.empty() )
+    if( !pp.active() )
     {
-        return v;   // proven-preferred: printed instead, never hedged nor refused
+        v.proven = shortestPathAny( g, srcDefs, dstDefs, /*provenOnly=*/true );
+        if( !v.proven.empty() )
+        {
+            return v;   // proven-preferred: printed instead, never hedged nor refused
+        }
     }
     v.hedged  = true;
-    v.refused = v.byName >= kPathRouteRefuseNameHops && v.cands >= kPathRouteRefuseCandsThreshold;
+    v.refused = !pp.active() && v.byName >= kPathRouteRefuseNameHops && v.cands >= kPathRouteRefuseCandsThreshold;
     return v;
 }
 

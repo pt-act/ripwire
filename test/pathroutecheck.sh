@@ -35,6 +35,7 @@
 #   (U) a hedge of >= 4 by-name hops says the chain is unlikely, names that route_cands counts in-repo definitions only (builtin and
 #       external receivers are not counted, so a low count is no proof), and carries a next= to verify it (full legend; compact keeps the clause).
 #   (S) the refusal's next= is shell-safe: a root with a space in a directory name parses as ONE argv element (sh -n, then sh -c).
+#   (PM) a pairs answer (two definitions of the from= name) carries the hedge on its first pair's chain and is never refused.
 #   (L) the --legend=full clause rides exactly when route_hedged= does; every answer parses (xmllint when present).
 #   (M) MCP path_between: the same verdict attrs and the same rows as the CLI on R, P, H, N4.
 #   (F) --for "<path subject>": the <graph_verb> block carries the same verdict as the CLI on R.
@@ -74,6 +75,8 @@ genchain "$TMP/r/m.py" 3 3 3 3            # (R)   route_cands 81
 genchain "$TMP/b64/m.py" 4 4 2 2          # (B64) route_cands exactly 64
 genchain "$TMP/b63/m.py" 7 3 3 1          # (B63) route_cands exactly 63
 genchain "$TMP/rs/sub dir/m.py" 3 3 3 3   # (S)   the same chain under a directory with a space
+genchain "$TMP/pm/m.py" 3 3 3 3           # (PM)  the same chain, plus a second start_entry (a pairs answer)
+printf 'def start_entry(o):\n    return o.s1(o)\n' > "$TMP/pm/other.py"
 # (P) the by-name shortcut start_entry -> o.s1 -> o.s2 -> o.fin beside a proven 6-hop chain start_entry -> a1 -> a2 -> a3 -> a4 -> Sink.go -> Sink.fin (proven: a constructed receiver, self)
 cat > "$TMP/p/m.py" <<'EOF'
 class Alpha:
@@ -382,6 +385,8 @@ for a in B63 N4 N6; do
 done
 # a 2-hop hedge is NOT called unlikely and carries no next=
 if grep -q 'UNLIKELY' <<<"$( run h --legend=full --path=start_entry,Sink.finish )" || [ "$( attr next <<<"$H" )" != - ]; then no "(U) H: a 2-hop hedge is called unlikely or carries next="; else ok "(U) H: a 2-hop hedge is neither unlikely nor given a next="; fi
+# the compact path purpose no longer says "when none" in front of a refusal
+if grep -q 'reachable=0 hops=0 when none shown' <<<"$( run r --legend=compact --path=start_entry,Sink.sink_call )"; then ok "(U) compact legend: reachable=0 hops=0 when none shown (a refusal is not none)"; else no "(U) compact path purpose still says 'when none'"; fi
 # (S) the refusal's next= pastes into a shell as ONE argument
 RS="$( run rs --path=start_entry,Sink.sink_call )"
 nx="$( attr next <<<"$RS" | python3 -c 'import html,sys; print(html.unescape(sys.stdin.read().strip()))' )"
@@ -390,6 +395,14 @@ if [ "$( attr route_hedged <<<"$RS" )" = not-proven ] && [ -n "$nx" ] && sh -n -
     ok "(S) a refusal under a directory with a space: next= is one shell argument ($nx)"
 else
     no "(S) next=[$nx] argc=$( sh -c "set -- $nx; echo \$#" 2>/dev/null )"
+fi
+# (PM) a pairs answer: two start_entry definitions
+PM="$( run pm --path=start_entry,Sink.sink_call )"
+if [ "$( attr pairs_reaching <<<"$PM" )" != - ] && [ "$( attr reachable <<<"$PM" )" = 1 ] && [ "$( attr route_hedged <<<"$PM" )" = name-stitched ] \
+   && [ "$( attr route_by_name <<<"$PM" )" = 4 ] && [ "$( attr route_cands <<<"$PM" )" = 81 ]; then
+    ok "(PM) a pairs answer carries the hedge on its first pair's chain (route_by_name=4 route_cands=81), never refused"
+else
+    no "(PM) $( grep -o '<path [^>]*>' <<<"$PM" )"
 fi
 # (L)
 fullof(){ case $1 in
