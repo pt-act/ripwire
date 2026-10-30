@@ -9,19 +9,33 @@
 # THE CONTRACT (one predicate, both transports):
 #   >= 2 by-name hops and a proven-only chain exists  -> the proven chain prints, route_hedged="proven-preferred"
 #   >= 2 by-name hops, no proven chain                -> printed, route_hedged="name-stitched" route_by_name= route_cands=
-#   >= 4 by-name hops, route_cands > 1, no proven one -> refused: reachable="0" hops="0" route_hedged="not-proven", no hop rows,
-#                                                        next="--callees=<from>"
-#   0..1 by-name hop, or cands=1 everywhere            -> unchanged (no route_hedged=)
+#   >= 4 by-name hops, no proven chain                -> printed hedged, a next= to verify it (from='s callees, else the hop body) (unlikely)
+#   >= 4 by-name hops, route_cands >= 64, no proven   -> refused: reachable="0" hops="0" route_hedged="not-proven", no hop rows,
+#                                                        next="--callees=<from>" (shell-safe: a path with a space is quoted)
+#   0..1 by-name hop                                  -> unchanged (no route_hedged=)
+#   a pairs answer (several definitions)              -> the first pair's chain is hedged, never refused
+#
+# WHY route_cands >= 64 AND NOT "> 1" (fix1 of be9c4d62): every real chain the reviews refused carried route_cands 144..23712 and was
+# wrong; every TRUE chain checked carried <= 16 (a TS / Go dependency-injection chain through interfaces has route_cands 2..16), and a
+# wrong chain whose by-name hop binds a builtin receiver (`stack.pop()` to the repo's one `def pop`) counts 1: route_cands counts
+# IN-REPO same-named definitions only, so a low count is no proof and the legend says so.
 #
 # ARMS
-#   (R) refuse: start_entry -> o.s1 -> o.s2 -> o.s3 -> sink, every hop by name over two same-named classes: refused, no decoy row.
+#   (R) refuse: start_entry -> o.s1 -> o.s2 -> o.s3 -> sink, every hop by name over THREE same-named classes (81): refused, no decoy row.
+#   (B64/B63) the knob's edge: route_cands exactly 64 is refused, 63 is hedged and printed (the same 4-hop shape).
 #   (P) proven-preferred: a 3-hop by-name shortcut beside a 6-hop proven chain: the proven chain prints, no via=name row.
 #   (H) hedge: two by-name hops (cands 2): printed whole, route_hedged="name-stitched" route_by_name="2".
 #   (N1) near miss: one by-name hop among proven ones: no route_hedged=.
 #   (N2) near miss: four by-name hops each with ONE candidate (cands=1): hedged, never refused.
 #   (N3) near miss: three by-name hops with cands=2 each (the LARGE-DEV cpython-02 shape, a TRUE chain): hedged, never refused.
+#   (N4) a TRUE 4-hop TypeScript dependency-injection chain (interface-typed fields, one production decorator: route_cands 2): hedged, printed.
+#   (N5) the same chain in Go (a production implementor and a fake per interface: route_cands 16): hedged, printed.
+#   (N6) five by-name hops with one candidate each (the shape of a chain whose first hop binds a builtin receiver to the repo's one
+#        same-named definition: route_cands 1): hedged and printed, never refused.
+#   (U) a hedge of >= 4 by-name hops says the chain is unlikely, names that route_cands counts in-repo definitions only (builtin and
+#       external receivers are not counted, so a low count is no proof), and carries a next= to verify it (full legend; compact keeps the clause).
 #   (L) the --legend=full clause rides exactly when route_hedged= does; every answer parses (xmllint when present).
-#   (M) MCP path_between: the same verdict attrs and the same rows as the CLI on R, P, H.
+#   (M) MCP path_between: the same verdict attrs and the same rows as the CLI on R, P, H, N4.
 #   (F) --for "<path subject>": the <graph_verb> block carries the same verdict as the CLI on R.
 #
 # Usage: test/pathroutecheck.sh [BIN]   (BIN defaults to RIPWIRE_BIN, then build/ripwire)
@@ -38,36 +52,26 @@ no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 2; }
 
-mkdir -p "$TMP/r" "$TMP/p" "$TMP/h" "$TMP/n1" "$TMP/n2" "$TMP/n3" "$TMP/home"
-# (R) every hop by name, each name defined by two classes (cands=2 per hop)
-cat > "$TMP/r/m.py" <<'EOF'
-class Alpha:
-    def s1(self, o):
-        return o.s2(o)
-    def s2(self, o):
-        return o.s3(o)
-    def s3(self, o):
-        return o.sink_call(o)
-
-class Beta:
-    def s1(self, o):
-        return 0
-    def s2(self, o):
-        return 0
-    def s3(self, o):
-        return 0
-
-class Decoy:
-    def sink_call(self, o):
-        return 1
-
-class Sink:
-    def sink_call(self, o):
-        return 2
-
-def start_entry(o):
-    return o.s1(o)
-EOF
+mkdir -p "$TMP/r" "$TMP/b64" "$TMP/b63" "$TMP/p" "$TMP/h" "$TMP/n1" "$TMP/n2" "$TMP/n3" "$TMP/n4/test" "$TMP/n5" "$TMP/n6" "$TMP/rs/sub dir" "$TMP/pm" "$TMP/home"
+# a 4-hop all-by-name chain start_entry -> o.s1 -> o.s2 -> o.s3 -> o.sink_call where name i is defined by K_i classes (the hop's cands=K_i):
+# route_cands = K1*K2*K3*K4. Only the first class of each name continues the chain; the last name's first class is Sink.
+genchain(){ python3 - "$@" <<'PYEOF'
+import sys
+ks = [int(x) for x in sys.argv[2:6]]
+names = ["s1", "s2", "s3", "sink_call"]
+out = []
+for i, k in enumerate(ks):
+    for j in range(k):
+        cls = "Sink" if (i == 3 and j == 0) else "C%d_%d" % (i, j)
+        body = "o.%s(o)" % names[i + 1] if (j == 0 and i < 3) else "%d" % (j + 1)
+        out.append("class %s:\n    def %s(self, o):\n        return %s\n" % (cls, names[i], body))
+out.append("def start_entry(o):\n    return o.s1(o)\n")
+open(sys.argv[1], "w").write("\n".join(out))
+PYEOF
+}
+genchain "$TMP/r/m.py" 3 3 3 3            # (R)   route_cands 81
+genchain "$TMP/b64/m.py" 4 4 2 2          # (B64) route_cands exactly 64
+genchain "$TMP/b63/m.py" 7 3 3 1          # (B63) route_cands exactly 63
 # (P) the by-name shortcut start_entry -> o.s1 -> o.s2 -> o.fin beside a proven 6-hop chain start_entry -> a1 -> a2 -> a3 -> a4 -> Sink.go -> Sink.fin (proven: a constructed receiver, self)
 cat > "$TMP/p/m.py" <<'EOF'
 class Alpha:
@@ -192,15 +196,99 @@ def start_entry(o):
     return o.s1(o)
 EOF
 
+# (N4) a TRUE 4-hop TypeScript dependency-injection chain: interface-typed fields, one production decorator of IRepo (route_cands 2)
+cat > "$TMP/n4/app.ts" <<'EOF'
+export interface IConn { execute(sql: string): string }
+export interface IRepo { save(row: string): string }
+export interface IHandler { handle(req: string): string }
+export interface IRouter { dispatch(req: string): string }
+export class Conn implements IConn { execute(sql: string): string { return sql; } }
+export class Repo implements IRepo { constructor(private conn: IConn) {} save(row: string): string { return this.conn.execute("insert"); } }
+export class Handler implements IHandler { constructor(private repo: IRepo) {} handle(req: string): string { return this.repo.save(req); } }
+export class Router implements IRouter { constructor(private handler: IHandler) {} dispatch(req: string): string { return this.handler.handle(req); } }
+export class App { constructor(private router: IRouter) {} serve(req: string): string { return this.router.dispatch(req); } }
+EOF
+cat > "$TMP/n4/cached.ts" <<'EOF'
+import { IRepo } from "./app";
+export class CachedRepo implements IRepo { constructor(private inner: IRepo) {} save(row: string): string { return this.inner.save(row); } }
+EOF
+cat > "$TMP/n4/test/fakes.ts" <<'EOF'
+import { IConn, IRepo, IHandler, IRouter } from "../app";
+export class FakeConn implements IConn { execute(sql: string): string { return ""; } }
+export class FakeRepo implements IRepo { save(row: string): string { return ""; } }
+export class FakeHandler implements IHandler { handle(req: string): string { return ""; } }
+export class FakeRouter implements IRouter { dispatch(req: string): string { return ""; } }
+EOF
+# (N5) the same chain in Go: a production implementor and a fake per interface (route_cands 16)
+cat > "$TMP/n5/go.mod" <<'EOF'
+module di
+go 1.21
+EOF
+cat > "$TMP/n5/app.go" <<'EOF'
+package di
+
+type IConn interface{ Execute(sql string) string }
+type IRepo interface{ Save(row string) string }
+type IHandler interface{ Handle(req string) string }
+type IRouter interface{ Dispatch(req string) string }
+
+type Conn struct{}
+func (c *Conn) Execute(sql string) string { return sql }
+type Repo struct{ conn IConn }
+func (r *Repo) Save(row string) string { return r.conn.Execute("insert") }
+type Handler struct{ repo IRepo }
+func (h *Handler) Handle(req string) string { return h.repo.Save(req) }
+type Router struct{ handler IHandler }
+func (r *Router) Dispatch(req string) string { return r.handler.Handle(req) }
+type App struct{ router IRouter }
+func (a *App) Serve(req string) string { return a.router.Dispatch(req) }
+EOF
+cat > "$TMP/n5/fakes.go" <<'EOF'
+package di
+
+type FakeConn struct{}
+func (c *FakeConn) Execute(sql string) string { return "" }
+type FakeRepo struct{}
+func (r *FakeRepo) Save(row string) string { return "" }
+type FakeHandler struct{}
+func (h *FakeHandler) Handle(req string) string { return "" }
+type FakeRouter struct{}
+func (r *FakeRouter) Dispatch(req string) string { return "" }
+EOF
+# (N6) five by-name hops, each name defined once (cands=1 everywhere)
+cat > "$TMP/n6/m.py" <<'EOF'
+class Pump:
+    def prevent(self, o):
+        return o.pop_item(o)
+
+class ListView:
+    def pop_item(self, o):
+        return o.step_a(o)
+
+class Mid:
+    def step_a(self, o):
+        return o.step_b(o)
+    def step_b(self, o):
+        return o.step_c(o)
+
+class Widget:
+    def step_c(self, o):
+        return o.step_d(o)
+
+class Clamp:
+    def step_d(self, o):
+        return 1
+EOF
+
 run(){ local d=$1; shift; ( cd "$TMP/$d" || exit 1; env -u RIPWIRE_LEGEND HOME="$TMP/home" "$BIN" "$TMP/$d" --no-cache "$@" < /dev/null 2>/dev/null ); }
 attr(){ python3 -c 'import re,sys; t=sys.stdin.read(); m=re.search(r"<path [^>]*>",t); a=re.search(r"\s"+sys.argv[1]+r"=\"([^\"]*)\"",m.group(0)) if m else None; print(a.group(1) if a else "-")' "$1"; }
 rows(){ python3 -c 'import re,sys; t=sys.stdin.read(); print(" ".join(re.findall(r"<s [^>]*n=\"([^\"]*)\"",t)))'; }
 
 # (R)
 R="$( run r --path=start_entry,Sink.sink_call )"
-if [ "$( attr reachable <<<"$R" )" = 0 ] && [ "$( attr route_hedged <<<"$R" )" = not-proven ] && [ "$( attr route_by_name <<<"$R" )" -ge 3 ] 2>/dev/null \
+if [ "$( attr reachable <<<"$R" )" = 0 ] && [ "$( attr route_hedged <<<"$R" )" = not-proven ] && [ "$( attr route_by_name <<<"$R" )" = 4 ] && [ "$( attr route_cands <<<"$R" )" = 81 ] \
    && [ -z "$( rows <<<"$R" )" ] && [ "$( attr next <<<"$R" )" != - ] && [ "$( attr next <<<"$R" | cut -c1-10 )" = --callees= ]; then
-    ok "(R) a 4-hop by-name chain is refused: reachable=0 route_hedged=not-proven, no hop rows, next=--callees"
+    ok "(R) a 4-hop by-name chain (route_cands 81) is refused: reachable=0 route_hedged=not-proven, no hop rows, next=--callees"
 else
     no "(R) refuse: $( grep -o '<path [^>]*>' <<<"$R" ) rows=[$( rows <<<"$R" )]"
 fi
@@ -236,6 +324,62 @@ if [ "$( attr reachable <<<"$N3" )" = 1 ] && [ "$( attr route_by_name <<<"$N3" )
 else
     no "(N3) $( grep -o '<path [^>]*>' <<<"$N3" )"
 fi
+# (B64) / (B63) the knob's edge
+B64="$( run b64 --path=start_entry,Sink.sink_call )"
+if [ "$( attr route_cands <<<"$B64" )" = 64 ] && [ "$( attr route_hedged <<<"$B64" )" = not-proven ] && [ "$( attr reachable <<<"$B64" )" = 0 ]; then
+    ok "(B64) route_cands exactly 64 with 4 by-name hops is refused"
+else
+    no "(B64) $( grep -o '<path [^>]*>' <<<"$B64" )"
+fi
+B63="$( run b63 --path=start_entry,Sink.sink_call )"
+if [ "$( attr route_cands <<<"$B63" )" = 63 ] && [ "$( attr route_hedged <<<"$B63" )" = name-stitched ] && [ "$( attr reachable <<<"$B63" )" = 1 ] \
+   && [ "$( rows <<<"$B63" | wc -w | tr -d ' ' )" = 5 ] && [ "$( attr next <<<"$B63" )" != - ]; then
+    ok "(B63) route_cands 63 with 4 by-name hops is hedged and printed whole (5 rows), with a next= to verify it"
+else
+    no "(B63) $( grep -o '<path [^>]*>' <<<"$B63" ) rows=[$( rows <<<"$B63" )]"
+fi
+# (N4) / (N5) a true DI chain through interfaces: hedged and printed, never refused
+N4="$( run n4 --path=App.serve,Conn.execute )"
+if [ "$( attr reachable <<<"$N4" )" = 1 ] && [ "$( attr route_by_name <<<"$N4" )" = 4 ] && [ "$( attr route_hedged <<<"$N4" )" = name-stitched ] \
+   && [ "$( rows <<<"$N4" | wc -w | tr -d ' ' )" = 5 ]; then
+    ok "(N4) a true 4-hop TypeScript DI chain (route_cands $( attr route_cands <<<"$N4" )) is hedged and printed whole, never refused"
+else
+    no "(N4) $( grep -o '<path [^>]*>' <<<"$N4" ) rows=[$( rows <<<"$N4" )]"
+fi
+N5="$( run n5 --path=App.Serve,Conn.Execute )"
+if [ "$( attr reachable <<<"$N5" )" = 1 ] && [ "$( attr route_by_name <<<"$N5" )" = 4 ] && [ "$( attr route_hedged <<<"$N5" )" = name-stitched ] \
+   && [ "$( rows <<<"$N5" | wc -w | tr -d ' ' )" = 5 ]; then
+    ok "(N5) a true 4-hop Go DI chain (route_cands $( attr route_cands <<<"$N5" )) is hedged and printed whole, never refused"
+else
+    no "(N5) $( grep -o '<path [^>]*>' <<<"$N5" ) rows=[$( rows <<<"$N5" )]"
+fi
+# (N6) five by-name hops, one candidate each
+N6="$( run n6 --path=Pump.prevent,Clamp.step_d )"
+if [ "$( attr reachable <<<"$N6" )" = 1 ] && [ "$( attr route_by_name <<<"$N6" )" = 5 ] && [ "$( attr route_cands <<<"$N6" )" = 1 ] \
+   && [ "$( attr route_hedged <<<"$N6" )" = name-stitched ]; then
+    ok "(N6) five by-name hops with one candidate each: hedged and printed, never refused"
+else
+    no "(N6) $( grep -o '<path [^>]*>' <<<"$N6" )"
+fi
+# (U) a hedge of >= 4 by-name hops says it is unlikely, and what route_cands does not count; next= rides
+ulegend(){ local mode=$1 a=$2; case $a in
+    B63) run b63 --legend="$mode" --path=start_entry,Sink.sink_call;;
+    N4)  run n4 --legend="$mode" --path=App.serve,Conn.execute;;
+    *)   run n6 --legend="$mode" --path=Pump.prevent,Clamp.step_d;;
+    esac; }
+for a in B63 N4 N6; do
+    full="$( ulegend full "$a" )"
+    cmp="$( ulegend compact "$a" )"
+    nx="$( attr next <<<"$full" )"
+    if grep -q 'UNLIKELY' <<<"$full" && grep -q 'builtin and external receivers are not counted, so a low count is no proof' <<<"$full" \
+       && grep -q 'builtin and external receivers are not counted, so a low count is no proof' <<<"$cmp" && [ "$nx" != - ]; then
+        ok "(U) $a: the >= 4-hop hedge says unlikely, says route_cands counts in-repo definitions only, and carries a next="
+    else
+        no "(U) $a: next=[$nx] unlikely=$( grep -c UNLIKELY <<<"$full" ) fullclause=$( grep -c 'a low count is no proof' <<<"$full" ) compactclause=$( grep -c 'a low count is no proof' <<<"$cmp" )"
+    fi
+done
+# a 2-hop hedge is NOT called unlikely and carries no next=
+if grep -q 'UNLIKELY' <<<"$( run h --legend=full --path=start_entry,Sink.finish )" || [ "$( attr next <<<"$H" )" != - ]; then no "(U) H: a 2-hop hedge is called unlikely or carries next="; else ok "(U) H: a 2-hop hedge is neither unlikely nor given a next="; fi
 # (L)
 fullof(){ case $1 in
     R) run r --legend=full --path=start_entry,Sink.sink_call;;
@@ -262,9 +406,10 @@ for l in sys.stdin:
     try: m=json.loads(l)
     except Exception: continue
     if m.get("id")==2: print("".join(c.get("text","") for c in m.get("result",{}).get("content",[])))'; }
-for a in R P H; do
+for a in R P H N4; do
     if [ "$a" = R ]; then cli="$R"; m="$( mcp r start_entry Sink.sink_call )"
     elif [ "$a" = P ]; then cli="$P"; m="$( mcp p start_entry Sink.fin )"
+    elif [ "$a" = N4 ]; then cli="$N4"; m="$( mcp n4 App.serve Conn.execute )"
     else cli="$H"; m="$( mcp h start_entry Sink.finish )"; fi
     if [ -z "$m" ]; then no "(M) $a: no MCP answer"; continue; fi
     if [ "$( attr route_hedged <<<"$m" )" = "$( attr route_hedged <<<"$cli" )" ] && [ "$( attr reachable <<<"$m" )" = "$( attr reachable <<<"$cli" )" ] \

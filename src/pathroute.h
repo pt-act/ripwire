@@ -19,14 +19,18 @@
 // THE RULE (thresholds measured over every reached --path / <graph_verb> chain in S1, MF1-DEV, MF1-DEV-2, LARGE-DEV, LD-2: no
 // single-chain answer outside four LARGE-DEV / LD-2 rows carries more than 1 by-name hop; of those four, the two wrong chains carry
 // 5 by-name hops (LD-2 django-06, LARGE-DEV cockroach-04) and the two with 3 split: cpython-02's is the true asyncio chain,
-// django-07's is wrong — so 3 is hedged, never refused, and the refusal starts at 4):
+// django-07's is wrong — so 3 is hedged, never refused, and the refusal starts at 4; the SECOND cut is route_cands (fix1): every wrong
+// chain the reviews refused carried route_cands 144..23712, every TRUE chain checked carried <= 16 (a TS / Go dependency-injection chain
+// through interfaces with two implementors per hop is route_cands 2), so a 4-hop chain is refused only from kPathRouteRefuseCandsThreshold up):
 //   * fewer than kPathRouteHedgeNameHops by-name hops: printed as before (each hop's via="name" row is its own hedge);
-//   * kPathRouteHedgeNameHops or more: printed, HEDGED on the root (route_hedged="name-stitched" route_by_name= route_cands=);
-//   * kPathRouteRefuseNameHops or more AND more than one candidate chain (route_cands > 1): REFUSED as the answer — the chain's rows
+//   * kPathRouteHedgeNameHops or more: printed, HEDGED on the root (route_hedged="name-stitched" route_by_name= route_cands=); from
+//     kPathRouteRefuseNameHops the hedge says the chain is unlikely and next= follows from='s callees to verify it;
+//   * kPathRouteRefuseNameHops or more AND route_cands >= kPathRouteRefuseCandsThreshold: REFUSED as the answer — the chain's rows
 //     are not printed (no wrong-branch hop rides in a route), the root says reachable="0" route_hedged="not-proven" (NOT "no path":
 //     the search found one, nothing proves it) and next= follows from='s callees.
-// Never a proven edge dropped from the search; never counted in reaches= / any proven count. A pairs answer (several definition
-// pairs, pathpairs.h) keeps its own per-pair hedged= ranking and is not judged here.
+// route_cands counts IN-REPO same-named definitions only: a by-name call on a builtin or external receiver (`stack.pop()` bound to the
+// repo's one `def pop`) counts 1, so a low count is never proof. Never a proven edge dropped from the search; never counted in
+// reaches= / any proven count. A pairs answer (several definition pairs, pathpairs.h) keeps its own per-pair hedged= ranking and is not judged here.
 
 #include "graph.h"
 #include "hopbody.h"     // byNameCandidates — the hop hedge's cands= (how many same-named definitions a by-name call could bind)
@@ -46,7 +50,8 @@ namespace rw
 {
 
 inline constexpr std::size_t   kPathRouteHedgeNameHops  = 2;        // knob (knob-census ADDENDUM): by-name hops that hedge the root
-inline constexpr std::size_t   kPathRouteRefuseNameHops = 4;        // knob: by-name hops (with cands > 1) that refuse the chain
+inline constexpr std::size_t   kPathRouteRefuseNameHops = 4;        // knob: by-name hops (with route_cands >= the threshold below) that refuse the chain
+inline constexpr std::uint64_t kPathRouteRefuseCandsThreshold = 64;  // knob: route_cands at which a chain of >= kPathRouteRefuseNameHops by-name hops is refused, not hedged (wrong chains 144..23712, true chains <= 16)
 inline constexpr std::uint64_t kPathRouteCandsCeiling   = 1000000;  // route_cands= saturates here (a product of per-hop counts); route_cands_capped="1" says so
 
 struct PathRouteVerdict
@@ -88,7 +93,7 @@ inline PathRouteVerdict pathRouteVerdict( const IngestResult& ing, const Graph& 
         return v;   // proven-preferred: printed instead, never hedged nor refused
     }
     v.hedged  = true;
-    v.refused = v.byName >= kPathRouteRefuseNameHops && v.cands > 1;
+    v.refused = v.byName >= kPathRouteRefuseNameHops && v.cands >= kPathRouteRefuseCandsThreshold;
     return v;
 }
 
@@ -119,8 +124,8 @@ inline PathRouteChains pathRouteChains( const IngestResult& ing, const Graph& g,
     return c;
 }
 
-// The root attributes the verdict adds ("" when it neither hedges nor refuses). A refused answer names from='s callees in next=
-// unless the root already carries a next= (`hasNext`).
+// The root attributes the verdict adds ("" when it neither hedges nor refuses). A refused answer, and a hedge of kPathRouteRefuseNameHops
+// or more by-name hops (unlikely, printed), names from='s callees in next= unless the root already carries a next= (`hasNext`).
 inline std::string pathRouteRootAttrs( const IngestResult& ing, const PathRouteVerdict& v, NodeId from, bool hasNext, bool singleRoot,
                                        std::string_view rootPrefix )
 {
@@ -134,7 +139,7 @@ inline std::string pathRouteRootAttrs( const IngestResult& ing, const PathRouteV
     }
     std::string out = v.refused ? " route_hedged=\"not-proven\" route_len=\"" + std::to_string( v.hops ) + "\"" : std::string( " route_hedged=\"name-stitched\"" );
     out += " route_by_name=\"" + std::to_string( v.byName ) + "\" route_cands=\"" + std::to_string( v.cands ) + "\"" + ( v.cands >= kPathRouteCandsCeiling ? " route_cands_capped=\"1\"" : "" );
-    if( v.refused && !hasNext && from < ing.symbols.size() )
+    if( ( v.refused || v.byName >= kPathRouteRefuseNameHops ) && !hasNext && from < ing.symbols.size() )
     {
         out += nextAttrXml( "--callees=" + pathPairSelector( ing, from, singleRoot, rootPrefix ) );
     }
@@ -151,15 +156,25 @@ inline std::string_view pathRouteLegend( const PathRouteVerdict& v ) noexcept
     }
     if( v.refused )
     {
-        return "route_hedged=not-proven route_len=N route_by_name=K route_cands=P: the only chain the search found is N hops, K of them "
-               "bound by name alone (receiver unproven), standing for P same-named candidate chains (route_cands_capped=1: at least P), so it is NOT printed as the answer: "
+        return "route_hedged=not-proven route_len=N route_by_name=K route_cands=P: the shortest chain the search found is N hops, K of them "
+               "bound by name alone (receiver unproven), standing for P same-named candidate chains (route_cands counts in-repo same-named definitions "
+               "along the route; builtin and external receivers are not counted, so a low count is no proof; route_cands_capped=1: at least P), so it is NOT printed as the answer: "
                "reachable=0 here means not proven, never no route, and the true route may be another; next= follows from='s callees "
                "(the callers verb walks back from to=; connect on from=,to= shows the edges with their via= marks). ";
+    }
+    if( v.hedged && v.byName >= kPathRouteRefuseNameHops )
+    {
+        return "route_hedged=name-stitched route_by_name=K route_cands=P: K of the shown chain's hops are bound by name alone (the via=name "
+               "rows; receiver unproven), standing for P same-named candidate chains (route_cands counts in-repo same-named definitions "
+               "along the route; builtin and external receivers are not counted, so a low count is no proof; route_cands_capped=1: at least P): "
+               "with 4 or more by-name hops this chain is UNLIKELY to be the real route, and the true route may be another; "
+               "next= names the step that verifies it (from='s callees, or a hop body to read) before relying on the chain. ";
     }
     if( v.hedged )
     {
         return "route_hedged=name-stitched route_by_name=K route_cands=P: K of the shown chain's hops are bound by name alone (the via=name "
-               "rows; receiver unproven), standing for P same-named candidate chains (route_cands_capped=1: at least P): the route is a hedge, and the true route may be another. ";
+               "rows; receiver unproven), standing for P same-named candidate chains (route_cands counts in-repo same-named definitions "
+               "along the route; builtin and external receivers are not counted, so a low count is no proof; route_cands_capped=1: at least P): the route is a hedge, and the true route may be another. ";
     }
     return "";
 }
