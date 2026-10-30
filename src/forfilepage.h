@@ -24,6 +24,7 @@
 #include "model.h"
 #include "docparse.h"    // docparse::detail::readWholeFile
 #include "filter.h"      // isTestPath, isDemoOrGeneratedPath — the tier label on a listed file
+#include "resolve.h"     // trimWs — the one blank-trimmer
 #include "redact.h"      // redactInPlace — the top-level text is file text, redacted like any served body
 #include "taskroute.h"   // taskroute::isOneOf — the one "is this word in the table" predicate
 #include "serialize.h"   // escapeXml, appendCdataSafe, cleanSig, truncateUtf8WithEllipsis
@@ -333,7 +334,11 @@ struct FileText
         const std::uint32_t s0 = lineStart[x - 1], s1 = x < lineCount ? lineStart[x] : std::uint32_t( src.size() );
         return std::string_view( src ).substr( s0, s1 - s0 );
     }
-    bool blank( std::uint32_t x ) const noexcept { return line( x ).find_first_not_of( " \t\r\n" ) == std::string_view::npos; }
+    bool blank( std::uint32_t x ) const noexcept   // nothing but blanks (resolve.h trimWs) before its newline
+    {
+        const std::string_view l = line( x );
+        return trimWs( l.ends_with( '\n' ) ? l.substr( 0, l.size() - 1 ) : l ).empty();
+    }
 };
 
 inline FileText loadFileText( const IngestResult& ing, std::uint32_t f )
