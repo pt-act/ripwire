@@ -204,6 +204,12 @@ for subj in document-remind.sh "the document-remind.sh script" '`document-remind
     else no "A2 '$subj' does not serve the page"; fi
 done
 
+# W1 [P] (CR pre-pass 43a) the lift says what it did to the auto-served bodies: the bodies below follow the file's rank, a def
+# ranked lower gets none, and the note names the way to read one. No "--" in it (it rides inside an XML comment).
+if has "$T/a1.xml" '[file subject: ' && has "$T/a1.xml" 'a def ranked lower gets none' && has "$T/a1.xml" 'expand flag'; then
+    ok "W1 the file-subject note discloses the displaced auto-served bodies and names the expand flag"
+else no "W1 the file-subject note does not say a lower-ranked def's body is held back"; fi
+
 # ── B: the other languages ──────────────────────────────────────────────────────────────────────────────────────────────────
 run py --for=sync_ledger > "$T/b1.xml"
 if ! has "$T/b1.xml" 'reason="no_candidates"' && has "$T/b1.xml" '<named-file p="tools/sync_ledger.py"' && has "$T/b1.xml" "if __name__ == '__main__':"; then

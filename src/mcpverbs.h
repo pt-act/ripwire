@@ -2547,7 +2547,7 @@ inline std::optional<std::string> forTaskText( const std::string& root, const st
         // FOR-FILE-ANCHOR: the CLI twin's file-subject lift (forfilepage.h), one rule
         if( const std::uint32_t moved = applyFileSubjectLift( ing, task, lensRank ); moved > 0 )
         {
-            mentionNote += std::format( " [file subject: {} defs of the named file ranked first]", moved );
+            mentionNote += fileSubjectNote( moved );
         }
     }
 
@@ -4918,7 +4918,7 @@ inline std::string packTaskText( const std::string& root, const std::string& tas
         // FOR-FILE-ANCHOR: the CLI twin's file-subject lift (computeLensRanking runs it for --pack-task too)
         if( const std::uint32_t moved = applyFileSubjectLift( ing, task, lr.rank ); moved > 0 )
         {
-            lr.mentionNote += std::format( " [file subject: {} defs of the named file ranked first]", moved );
+            lr.mentionNote += fileSubjectNote( moved );
         }
     }
     if( !noRoute && std::getenv( "RIPWIRE_COCHANGE" ) && hasEnclosingGitRepo( root ) )

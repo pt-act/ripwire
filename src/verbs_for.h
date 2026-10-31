@@ -231,7 +231,7 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
         // FOR-FILE-ANCHOR (forfilepage.h): a subject that IS a file ranks that file's top defs first
         if( const std::uint32_t moved = applyFileSubjectLift( ing, task, lensRank ); moved > 0 )
         {
-            out.mentionNote += std::format( " [file subject: {} defs of the named file ranked first]", moved );
+            out.mentionNote += fileSubjectNote( moved );
         }
     }
 

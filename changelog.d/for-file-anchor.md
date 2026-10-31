@@ -13,4 +13,4 @@ order with its last line, its indexed callers (`in=`; `in="0"` is "no caller in 
 picks none; a file named as context in a longer question is anchored but gets no page; a dotted `Class.method` with no such
 file keeps its old reading. `RIPWIRE_NO_FILE_PAGE=1` turns the page off. Gate: `test/forfileanchorcheck.sh`. A path that names a directory (`--for=pkg/foo`) is read as that
 directory before any shorter suffix, so it is never answered by an unrelated same-stem file elsewhere; a shorter-suffix match is
-listed as `near="1"` and never paged. The whole page stops at 16 KB at a file boundary (`bytes_capped="1"`).
+listed as `near="1"` and never paged. The whole page stops at 16 KB at a file boundary (`bytes_capped="1"`). The note the lift leaves in the answer's header comment now says what it did to the auto-served bodies: they follow the named file's rank, a def ranked lower gets none, and the expand flag reads one by name.

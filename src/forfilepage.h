@@ -706,6 +706,14 @@ inline std::string renderForFilePage( const IngestResult& ing, const Graph& g, s
     return out;
 }
 
+// The note the lift leaves on the mention note (one text for the CLI and both MCP twins). It says what the lift did to the auto-served
+// bodies: they follow the named file's rank now, a def ranked lower gets none, and the way to read one. No "--" (an XML comment).
+inline std::string fileSubjectNote( std::uint32_t moved )
+{
+    return std::format( " [file subject: {} defs of the named file ranked first; the bodies served follow that rank, a def ranked lower gets none "
+                        "(its body: the expand flag, by name)]", moved );
+}
+
 // FILE SUBJECT LIFT: when the subject IS a file (forSubjectIsFileShaped) the named file's defs are the answer, so its top
 // kMentionMaxSymbolsPerFile defs (by current score, then line) are ranked ABOVE everything else — the B8 mention anchor keeps a
 // named file just below #1 because there the file is context in a longer question, here it is the whole question. A name that
