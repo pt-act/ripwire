@@ -15682,11 +15682,22 @@ inline std::vector<float> diffTeleport( const IngestResult& ing, const std::vect
     return p;
 }
 
+// Is the out-CSR edge at position e a GUESS the answer cannot prove: bound by name alone, a markdown link, a link to a missing anchor, or
+// one arm of a resolver split (prov=3)? The one-implementor edge (via="impl") is NOT one: ifacedispatch.h commits it only when the receiver's
+// interface has exactly one implementor in the tree, and its hop row says so. pathHopHedged (pathpairs.h, the hop-row marks) hedges these
+// plus via="impl"; shortestPathAny's provenOnly walk skips exactly these, so a "proven-only" chain never carries a guessed hop.
+inline bool edgeUnprovenAt( const Graph& g, std::size_t e ) noexcept
+{
+    return ( e < g.outNameOnly.size() && edgeKindByte( g.outNameOnly[ e ] ) != 0 ) || ( e < g.outAnchorMiss.size() && g.outAnchorMiss[ e ] != 0 )
+        || ( e < g.outProv.size() && g.outProv[ e ] == 3u );
+}
+
 // ---- shortest directed call-path (--path=SRC,DST): BFS over out-edges; empty if unreachable -----------
 // Deterministic: out-edges are stored ascending by target id within each source, so BFS expands in a fixed
 // order. Returns the node sequence src..dst inclusive; {src} if src==dst; empty if dst is unreachable.
-// provenOnly (PATH-ROUTE v2, src/pathroute.h): skip every edge bound by name alone (Graph::outNameOnly kind kEdgeName) — the
-// proven-only search a name-stitched chain is checked against; the default walks every out-edge, as it always has.
+// provenOnly (PATH-ROUTE v2, src/pathroute.h): skip every edge that is a guess (edgeUnprovenAt: by name, markdown link, missing anchor,
+// split arm) — the proven-only search a name-stitched chain is checked against, so route_hedged="proven-preferred" never prints a
+// by-name, link or split hop; the default walks every out-edge, as it always has.
 inline std::vector<NodeId> shortestPathAny( const Graph& g, const std::vector<NodeId>& srcs, const std::vector<NodeId>& dsts, bool provenOnly = false )
 {
     const std::size_t N = g.wOutDeg.size();
@@ -15726,7 +15737,7 @@ inline std::vector<NodeId> shortestPathAny( const Graph& g, const std::vector<No
         for( std::uint32_t k = g.outOff[u]; k < g.outOff[u + 1]; ++k )
         {
             const NodeId v = g.outTargets[k];
-            if( seen[v] || ( provenOnly && k < g.outNameOnly.size() && edgeKindByte( g.outNameOnly[k] ) == kEdgeName ) )
+            if( seen[v] || ( provenOnly && edgeUnprovenAt( g, k ) ) )
             {
                 continue;
             }

@@ -25,6 +25,11 @@
 #   (R) refuse: start_entry -> o.s1 -> o.s2 -> o.s3 -> sink, every hop by name over THREE same-named classes (81): refused, no decoy row.
 #   (B64/B63) the knob's edge: route_cands exactly 64 is refused, 63 is hedged and printed (the same 4-hop shape).
 #   (P) proven-preferred: a 3-hop by-name shortcut beside a 6-hop proven chain: the proven chain prints, no via=name row.
+#   (PS) the proven-only search skips EVERY guessed edge, not only the by-name ones (CodeRabbit #481): a 3-hop by-name shortcut beside a
+#        6-hop chain whose 4th hop is one arm of a resolver split (prov="split"): the chain is NOT "proven-preferred" (it would print a
+#        guessed hop under a proven label); the shortcut prints hedged, route_hedged="name-stitched", and no row carries prov="split".
+#   (PI) control: the same shape with the one-implementor edge (via="impl", a proven edge whose row says so) in place of the split arm
+#        still prints the 6-hop chain, route_hedged="proven-preferred", via="impl" on its row.
 #   (H) hedge: two by-name hops (cands 2): printed whole, route_hedged="name-stitched" route_by_name="2".
 #   (N1) near miss: one by-name hop among proven ones: no route_hedged=.
 #   (N2) near miss: four by-name hops each with ONE candidate (cands=1): route_hedged="unlikely", printed, never refused.
@@ -55,7 +60,7 @@ no(){ printf '  FAIL  %s\n' "$*"; fail=1; }
 [ -x "$BIN" ] || { echo "no ripwire binary at $BIN — build first"; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 2; }
 
-mkdir -p "$TMP/r" "$TMP/b64" "$TMP/b63" "$TMP/p" "$TMP/h" "$TMP/n1" "$TMP/n2" "$TMP/n3" "$TMP/n4/test" "$TMP/n5" "$TMP/n6" "$TMP/rs/sub dir" "$TMP/pm" "$TMP/home"
+mkdir -p "$TMP/r" "$TMP/b64" "$TMP/b63" "$TMP/p" "$TMP/h" "$TMP/n1" "$TMP/n2" "$TMP/n3" "$TMP/n4/test" "$TMP/n5" "$TMP/n6" "$TMP/ps" "$TMP/pi" "$TMP/rs/sub dir" "$TMP/pm" "$TMP/home"
 # a 4-hop all-by-name chain start_entry -> o.s1 -> o.s2 -> o.s3 -> o.sink_call where name i is defined by K_i classes (the hop's cands=K_i):
 # route_cands = K1*K2*K3*K4. Only the first class of each name continues the chain; the last name's first class is Sink.
 genchain(){ python3 - "$@" <<'PYEOF'
@@ -116,6 +121,19 @@ def start_entry(o):
     a1(o)
     return o.s1(o)
 EOF
+# (PS)/(PI) Java: the by-name shortcut startEntry -> o.s1 -> o.s2 -> o.fin (a Ctx receiver nothing declares: 3 hops by name) beside the 6-hop
+# chain startEntry -> a1 -> a2 -> a3 -> {Over.pick: one arm of a two-overload split | OnlyStep.run: the only implementor of a two-method interface} -> Sink.go -> Sink.fin
+for d in ps pi; do
+    printf 'public class Sink { public int go(Object o) { return this.fin(o); } public int fin(Object o) { return 3; } }\n' > "$TMP/$d/Sink.java"
+    printf 'public class Decoy { public int fin(Ctx o) { return 4; } }\n' > "$TMP/$d/Decoy.java"
+    printf 'public class Alpha { public int s1(Ctx o) { return o.s2(o); } public int s2(Ctx o) { return o.fin(o); } }\n' > "$TMP/$d/Alpha.java"
+    printf 'public class Beta { public int s1(Ctx o) { return 0; } public int s2(Ctx o) { return 0; } }\n' > "$TMP/$d/Beta.java"
+done
+printf 'public class Over {\n    public int pick(Ctx o) { return new Sink().go(o); }\n    public int pick(Other o) { return 0; }\n}\n' > "$TMP/ps/Over.java"
+printf 'public class Chain {\n    static int a3(Over m, Ctx o) { return m.pick(o); }\n    static int a2(Over m, Ctx o) { return a3(m, o); }\n    static int a1(Over m, Ctx o) { return a2(m, o); }\n    static int startEntry(Ctx o, Over m) { a1(m, o); return o.s1(o); }\n}\n' > "$TMP/ps/Chain.java"
+printf 'public interface Step { int run(Object o); int size(); }\n' > "$TMP/pi/Step.java"
+printf 'public class OnlyStep implements Step { public int run(Object o) { return new Sink().go(o); } public int size() { return 1; } }\n' > "$TMP/pi/OnlyStep.java"
+printf 'public class Chain {\n    static int a3(Step i, Ctx o) { return i.run(o); }\n    static int a2(Step i, Ctx o) { return a3(i, o); }\n    static int a1(Step i, Ctx o) { return a2(i, o); }\n    static int startEntry(Ctx o, Step i) { a1(i, o); return o.s1(o); }\n}\n' > "$TMP/pi/Chain.java"
 # (H) two by-name hops
 cat > "$TMP/h/m.py" <<'EOF'
 class Alpha:
@@ -305,6 +323,20 @@ if [ "$( attr route_hedged <<<"$P" )" = proven-preferred ] && [ "$( attr reachab
     ok "(P) the proven 6-hop chain prints over the by-name shortcut (route_hedged=proven-preferred)"
 else
     no "(P) proven-preferred: $( grep -o '<path [^>]*>' <<<"$P" ) rows=[$( rows <<<"$P" )]"
+fi
+# (PS) a split arm is a guess: the proven-only search must not take it
+PS="$( run ps --path=Chain.startEntry,Sink.fin )"
+if [ "$( attr route_hedged <<<"$PS" )" = name-stitched ] && [ "$( attr route_by_name <<<"$PS" )" = 3 ] && [ "$( attr hops <<<"$PS" )" = 3 ] && ! grep -q 'prov="split"' <<<"$PS"; then
+    ok "(PS) a chain through a split arm is not proven-preferred: the by-name shortcut prints hedged (route_hedged=name-stitched)"
+else
+    no "(PS) split arm under a proven label: $( grep -o '<path [^>]*>' <<<"$PS" ) rows=[$( rows <<<"$PS" )] split=$( grep -c 'prov="split"' <<<"$PS" )"
+fi
+# (PI) the one-implementor edge is a proven edge (its row says via="impl"): still preferred
+PI="$( run pi --path=Chain.startEntry,Sink.fin )"
+if [ "$( attr route_hedged <<<"$PI" )" = proven-preferred ] && [ "$( attr hops <<<"$PI" )" = 6 ] && grep -q 'via="impl"' <<<"$PI" && ! grep -q 'via="name"' <<<"$PI"; then
+    ok "(PI) the one-implementor edge stays proven: the 6-hop chain prints (route_hedged=proven-preferred, via=impl on its row)"
+else
+    no "(PI) impl control: $( grep -o '<path [^>]*>' <<<"$PI" ) rows=[$( rows <<<"$PI" )]"
 fi
 # (H)
 H="$( run h --path=start_entry,Sink.finish )"

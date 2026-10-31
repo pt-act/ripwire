@@ -7,7 +7,7 @@ found, `reachable="1"`, even when several of its hops were `via="name"` calls wh
 and nothing on the answer said so. One shared verdict now judges the chain a single-pair answer prints:
 
 - 2 or more by-name hops, and a chain over proven call edges only exists between the same definitions: that proven chain is
-  printed instead, with `route_hedged="proven-preferred" route_len= route_by_name=` describing the shorter by-name one.
+  printed instead, with `route_hedged="proven-preferred" route_len= route_by_name=` describing the shorter by-name one. A by-name hop, a markdown link, a link to a missing anchor and one arm of a resolver split are not proven edges for this search; the one-implementor edge (`via="impl"`) is, and its row says so.
 - 2 or more by-name hops and no proven chain: printed as before, hedged on the root with
   `route_hedged="name-stitched" route_by_name="K" route_cands="P"` (K by-name hops, P the product of their same-named candidates).
 - 4 or more by-name hops and `route_cands` of 64 or more (and no proven chain): refused as the answer (3 is only hedged: on CPython, `--path=asyncio.run,Handle._run` is a true chain with 3 by-name hops, and a true TypeScript or Go dependency-injection chain through interfaces carries 2 to 16 candidates, so it is hedged and printed). The root says
