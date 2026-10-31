@@ -17,6 +17,7 @@
 #include "epmanifest.h"     // ep-manifest: the manifest entry-point groups that register a shown row
 #include "listedin.h"       // manifest-noncode: the build/package/registry manifest lines that list a shown file (creation tasks)
 #include "forreexport.h"    // ALIAS-IMPORT: the re-export hop rows of a definition the task names
+#include "forfilepage.h"    // FOR-FILE-ANCHOR (#466): the named file's page when the subject IS a file
 #include <algorithm>         // std::ranges::find: the ep manifest re-picked from the rows <sigs> emits
 #include <optional>          // the redaction-tally snapshots a degraded pre-render restores
 #include <string_view>       // %.*s (precision, pointer) collapses to one view
@@ -227,6 +228,11 @@ rw::LensRanking computeLensRanking( const MainDispatch& d, std::string_view task
         // Collected whether or not the anchor MOVED anything: a task whose named file fell outside the
         // extraction window lifts nothing, and is the run that most needs telling.
         absorbCapDisclosure( mentionInfo.caps, out.capNote, out.capAttrs, out.capJson );
+        // FOR-FILE-ANCHOR (forfilepage.h): a subject that IS a file ranks that file's top defs first
+        if( const std::uint32_t moved = applyFileSubjectLift( ing, task, lensRank ); moved > 0 )
+        {
+            out.mentionNote += fileSubjectNote( moved );
+        }
     }
 
     // r4 sibling lift (EXPERIMENTAL, pre-registered — bench/locbench/results/r4_siblift/PREREG.md): lift the
@@ -600,6 +606,7 @@ struct ForLensHeaderParts
                                             // the default regime, so an <ep> rides and its clause defines it; cleared with it
     bool             listedPresent = false;    // manifest-noncode (listedin.h): a manifest lists a shown file on a creation task, so a
                                             // <listed> rides and its clause defines it; cleared with it
+    bool             filePagePresent = false;  // FOR-FILE-ANCHOR (forfilepage.h): the subject is a file, so its <named-file> page rides
 };
 
 // Splice a pre-formatted fragment in front of a structural boundary, or leave the document exactly as it
@@ -823,6 +830,7 @@ inline std::string peerRowClauses( const ForLensHeaderParts& p, bool compact )
     out += presentOnlyClause( p.ctorHopPresent, compact, rw::kForCompactCtorHopLegend, rw::kForCtorHopLegend );
     out += presentOnlyClause( p.epPresent, compact, rw::kForCompactEpManifestLegend, rw::kForEpManifestLegend );   // ep-manifest
     out += presentOnlyClause( p.listedPresent, compact, rw::kForCompactListedInLegend, rw::kForListedInLegend );   // manifest-noncode
+    out += presentOnlyClause( p.filePagePresent, compact, rw::kForCompactFilePageLegend, rw::kForFilePageLegend );   // FOR-FILE-ANCHOR
     return out;
 }
 inline std::string_view hopsCallsNextLegend( const ForLensHeaderParts& p, bool compact ) noexcept
@@ -3380,6 +3388,11 @@ std::optional<int> runForLensPass( const MainDispatch& d, rw::LensRanking lr, co
         }
         headerParts.epPresent     = !epManifest.xml.empty();
         headerParts.listedPresent = !listedIn.xml.empty();
+        // FOR-FILE-ANCHOR (forfilepage.h): the named file's page — the default regime and XML only, as the ep manifest; it rides
+        // on top of the complete answer (its clause is exempt from the sigs charge below), first inside the root.
+        const std::string filePageXml = ( autoBundleMode && !cfg.json && cfg.tokenBudget <= 0 && rw::forFilePageOn() )
+                                      ? rw::renderForFilePage( ing, g, cfg.forTask, redactPtr ) : std::string();
+        headerParts.filePagePresent = !filePageXml.empty();
         const auto buildForHeader = [ & ]( bool withRouteAttr, bool withTaskEcho, std::string_view extraNotes )
         { return forLensHeaderText( headerParts, withRouteAttr, withTaskEcho, extraNotes ); };
         std::string headerStr = buildForHeader( /*withRouteAttr=*/true, /*withTaskEcho=*/true, {} );
@@ -3665,7 +3678,8 @@ std::optional<int> runForLensPass( const MainDispatch& d, rw::LensRanking lr, co
         const std::size_t callerHopLegendEmitted = callerHopClause( headerParts, compactLegendOn ).size()
                                                  + presentOnlyClause( headerParts.epPresent, compactLegendOn, rw::kForCompactEpManifestLegend, rw::kForEpManifestLegend ).size()   // ep-manifest: same contract
                                                  + presentOnlyClause( headerParts.dispatchHopPresent, compactLegendOn, rw::kForCompactDispatchHopLegend, rw::kForDispatchHopLegend ).size()   // mf1-nx wave 4: same contract
-                                                 + presentOnlyClause( headerParts.listedPresent, compactLegendOn, rw::kForCompactListedInLegend, rw::kForListedInLegend ).size();   // manifest-noncode: same contract
+                                                 + presentOnlyClause( headerParts.listedPresent, compactLegendOn, rw::kForCompactListedInLegend, rw::kForListedInLegend ).size()   // manifest-noncode: same contract
+                                                 + presentOnlyClause( headerParts.filePagePresent, compactLegendOn, rw::kForCompactFilePageLegend, rw::kForFilePageLegend ).size();   // FOR-FILE-ANCHOR: same contract
         // attrib-multidef Q1: the prov="split" clause is a disclosure on the same contract — exempt, as e= is, so <sigs> (rows and
         // its continuation's budget) is byte-identical with and without it (fordisclosurecheck #2: auto vs --signatures-only)
         const std::size_t splitLegendEmitted = !headerParts.splitPresent ? 0u
@@ -3706,6 +3720,7 @@ std::optional<int> runForLensPass( const MainDispatch& d, rw::LensRanking lr, co
                                               + presentOnlyClause( headerParts.epPresent, /*compact=*/false, rw::kForCompactEpManifestLegend, rw::kForEpManifestLegend ).size()  // ep-manifest
                                               + presentOnlyClause( headerParts.dispatchHopPresent, /*compact=*/false, rw::kForCompactDispatchHopLegend, rw::kForDispatchHopLegend ).size()  // mf1-nx wave 4
                                               + presentOnlyClause( headerParts.listedPresent, /*compact=*/false, rw::kForCompactListedInLegend, rw::kForListedInLegend ).size()  // manifest-noncode
+                                              + presentOnlyClause( headerParts.filePagePresent, /*compact=*/false, rw::kForCompactFilePageLegend, rw::kForFilePageLegend ).size()  // FOR-FILE-ANCHOR
                                               + ( headerParts.splitPresent ? rw::kForSplitClause.size() : 0u );   // attrib-multidef Q1
             std::size_t       fullCharged     = fullExempt > fullHeaderBytes ? fullHeaderBytes : fullHeaderBytes - fullExempt;
             fullCharged -= std::min( fullCharged, rw::forZeroNoteBytes( fullHeader ) );   // lean-answers: exempt, as above
@@ -4449,7 +4464,7 @@ std::optional<int> runForLensPass( const MainDispatch& d, rw::LensRanking lr, co
             // F2: everything OUTSIDE the header at the markup rate. enrich.markupBytes is the compact <hops> section,
             // folded in here rather than charged separately — one rate, one rounding (ForEnrichmentPlan).
             .nonHeaderMarkupBytes = forHdrXml.size() + sigsStr.size() + legoStr.size() + composeStr.size() + routeStr.size() + graphSection.xml.size()
-                                  + enrich.markupBytes + tailStr.size() + slot.markupBytes + fold.markupBytes + callerHop.xml.size() + epManifest.xml.size() + ( dispatchHop.xml.size() - dispatchHop.bodyBytes ) + listedIn.xml.size() + 6,   // + "</ctx>" (deep-tail: the tail at the markup rate)
+                                  + enrich.markupBytes + tailStr.size() + slot.markupBytes + fold.markupBytes + callerHop.xml.size() + epManifest.xml.size() + ( dispatchHop.xml.size() - dispatchHop.bodyBytes ) + listedIn.xml.size() + filePageXml.size() + 6,   // + "</ctx>" (deep-tail: the tail at the markup rate)
             // T3: the body-rate sections; enrich.bodyTokens is zero on the compact route (markup, above); for-body-slot: the
             // owner body at the body rate (a skipped slot's element is markup, above)
             .bodyTokens           = detailSection.tokens + enrich.bodyTokens + slot.bodyTokens + fold.bodyTokens   // body-fold: its bodies
@@ -4470,6 +4485,8 @@ std::optional<int> runForLensPass( const MainDispatch& d, rw::LensRanking lr, co
         // R2-AF (round 2, S4): first rows inside the root, right after the legend — see forHdrRows above.
         // The SAME string every sum above charged (rendered once, beside forHdrRows) — "" when there is no row.
         std::fwrite( forHdrXml.data(), 1, forHdrXml.size(), stdout );
+        // FOR-FILE-ANCHOR: the named file's page, the head of a file-shaped answer ("" when none; priced with the markup above)
+        std::fwrite( filePageXml.data(), 1, filePageXml.size(), stdout );
         if( sigsPreRendered )
         {
             std::fwrite( sigsStr.data(), 1, sigsStr.size(), stdout );
