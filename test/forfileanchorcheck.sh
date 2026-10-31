@@ -179,8 +179,11 @@ for i in range(1, 5):
 w("long/run-deploy.sh", "#!/bin/sh\n" + "".join('echo "step %d"\n' % i for i in range(120)))
 PY
 
-run(){ local d="$1"; shift; ( cd "$T/$d" || exit 1; HOME="$H" TMPDIR="$T/" "$BIN" "$T/$d" --no-cache "$@" < /dev/null 2>/dev/null ); }
+# run FAILS the gate when the binary exits non-zero: an absence arm reads the capture, and a crashed run leaves it empty (CodeRabbit #481)
+run(){ local d="$1"; shift; ( cd "$T/$d" || exit 1; HOME="$H" TMPDIR="$T/" "$BIN" "$T/$d" --no-cache "$@" < /dev/null 2>/dev/null ) || no "ripwire exited non-zero: $d $*"; }
 has(){ grep -qF -- "$2" "$1"; }
+# answered FILE NEEDLE: the capture holds a real answer (non-empty and carrying NEEDLE) — required before every absence-only arm
+answered(){ [ -s "$1" ] && has "$1" "$2"; }
 
 # ── A: the #466 Bash rows ───────────────────────────────────────────────────────────────────────────────────────────────────
 run bash --for=document-remind > "$T/a1.xml"
@@ -304,8 +307,8 @@ run c --for=widget.h > "$T/h2.xml"
 if has "$T/h2.xml" '<named-file p="src/widget.h"' && ! grep -qE '<named-file p="src/widget.h"[^>]* next=' "$T/h2.xml"; then ok "H2 a header's page carries no next="
 else no "H2 widget.h: no page, or a next= that calls its prototypes unreached"; fi
 run d7 --for=docs/guide.md > "$T/n3.xml"
-if ! has "$T/n3.xml" '<named-file p="docs/guide.md"' && ! has "$T/n3.xml" '<f p="docs/guide.md"'; then ok "N3 a path naming a prose file pages nothing"
-else no "N3 docs/guide.md was paged or listed"; fi
+if answered "$T/n3.xml" '<sigs' && ! has "$T/n3.xml" '<named-file p="docs/guide.md"' && ! has "$T/n3.xml" '<f p="docs/guide.md"'; then ok "N3 a path naming a prose file pages nothing"
+else no "N3 docs/guide.md was paged or listed (or the run printed no answer)"; fi
 
 # ── M3: one byte bound on the page ──────────────────────────────────────────────────────────────────────────────────────────────
 pagebytes(){ python3 - "$1" <<'PY'
@@ -375,8 +378,8 @@ else no "T1 tier= or by_total= missing"; fi
 
 # ── E: near misses that must NOT serve a page ───────────────────────────────────────────────────────────────────────────────
 run py --for="where STATE used in sync_ledger.py is defined" > "$T/e1.xml"
-if ! has "$T/e1.xml" '<named-file'; then ok "E1 a file named as context carries no page"
-else no "E1 a file named as context got a page"; fi
+if answered "$T/e1.xml" '<sigs' && ! has "$T/e1.xml" '<named-file'; then ok "E1 a file named as context carries no page"
+else no "E1 a file named as context got a page (or the run printed no answer)"; fi
 top3="$( python3 - "$T/e1.xml" <<'PY'
 import re, sys
 s = open(sys.argv[1]).read()
@@ -390,8 +393,8 @@ run c --for=widget.c > "$T/h1.xml"
 if has "$T/h1.xml" '<hdr p="src/widget.h" of="src/widget.c"/>'; then ok "H1 a bare C basename gets its header partner row"
 else no "H1 no <hdr> partner row for the bare basename widget.c"; fi
 run py --for=run_all > "$T/e2.xml"
-if ! has "$T/e2.xml" '<named-file' && ! has "$T/e2.xml" 'file subject:'; then ok "E2 a stem that is a symbol's name stays a name"
-else no "E2 run_all (a function's name) was read as a file stem"; fi
+if answered "$T/e2.xml" '<sigs' && ! has "$T/e2.xml" '<named-file' && ! has "$T/e2.xml" 'file subject:'; then ok "E2 a stem that is a symbol's name stays a name"
+else no "E2 run_all (a function's name) was read as a file stem (or the run printed no answer)"; fi
 
 # ── F / R / K: honesty ─────────────────────────────────────────────────────────────────────────────────────────────────────
 if grep -qE '<s t="fn" n="unused_helper" l="7" e="8" in="0">' "$T/b1.xml" && grep -qE '<s t="fn" n="emit" [^>]*by="[^"]*tools/test_sync_ledger.py' "$T/b1.xml" \
@@ -416,10 +419,10 @@ if has "$T/k2.xml" '<named-cut total="3" shown="2"/>' && [ "$( grep -o '<named-f
 else no "K2 three named files: no named-cut disclosure or not two pages"; fi
 
 # ── N: postures without the page ────────────────────────────────────────────────────────────────────────────────────────────
-( cd "$T/py" && RIPWIRE_NO_FILE_PAGE=1 HOME="$H" TMPDIR="$T/" "$BIN" "$T/py" --no-cache --for=sync_ledger < /dev/null 2>/dev/null ) > "$T/n1.xml"
+( cd "$T/py" && RIPWIRE_NO_FILE_PAGE=1 HOME="$H" TMPDIR="$T/" "$BIN" "$T/py" --no-cache --for=sync_ledger < /dev/null 2>/dev/null ) > "$T/n1.xml" || no "ripwire exited non-zero: RIPWIRE_NO_FILE_PAGE=1 --for=sync_ledger"
 run py --for=sync_ledger --json > "$T/n2.json"
-if ! has "$T/n1.xml" '<named-file' && ! has "$T/n1.xml" 'named-file p=' && ! has "$T/n2.json" 'named-file'; then ok "N1 no page with RIPWIRE_NO_FILE_PAGE=1 nor under --json"
-else no "N1 a page rode under the kill switch or --json"; fi
+if answered "$T/n1.xml" '<sigs' && answered "$T/n2.json" '"' && ! has "$T/n1.xml" '<named-file' && ! has "$T/n2.json" 'named-file'; then ok "N1 no page with RIPWIRE_NO_FILE_PAGE=1 nor under --json"
+else no "N1 a page rode under the kill switch or --json (or a run printed no answer)"; fi
 
 # ── L: the clause defines what the page carries ─────────────────────────────────────────────────────────────────────────────
 run py --for=sync_ledger --legend=full > "$T/l1.xml"
