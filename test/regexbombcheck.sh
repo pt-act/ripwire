@@ -40,6 +40,12 @@
 #       (4) determinism — stdout AND stderr byte-identical run to run;
 #       (5) informational — the mid-match catch survives as belt-and-braces (a refusal by name since
 #           src/regexguard.h; test/regexguardcheck.sh arm (b) asserts it on every entry point).
+#       (6) regex-screen-hardening (M3, 2026-10): the OVERLAPPING-ALTERNATION battery — a DIFFERENT shape
+#           than (1)'s nested quantifiers, judged on a repeated group's top-level branches instead of its
+#           inner quantifiers. (a|a)+b and (a|aa)+b are exact-duplicate / prefix branches; (x|xy)+c$ the
+#           same with a trailing anchor; (\w|\d)+$ two classes whose bytes intersect; (a|a*)+ a branch that
+#           can match zero bytes on its own. (5) below narrows to the one named, disclosed scope boundary
+#           M3 does NOT cover — a multi-byte literal compared against a class.
 #
 # Usage: RIPWIRE_BIN=build/ripwire bash test/regexbombcheck.sh
 # Exits non-zero on any failure. Does NOT touch regression.sh.
@@ -135,6 +141,18 @@ bombCase "((a)?)+b"  '((a)?)+b'
 bombCase "(a{3})+b"  '(a{3})+b'
 bombCase "(?:a+)+b"  '(?:a+)+b'
 
+# ── (6) the OVERLAPPING-ALTERNATION battery (M3): a repeated group's top-level branches, not its inner
+# quantifiers — none of these five carries a quantifier INSIDE any branch, so arm (1)'s M2 screen alone
+# would admit all five; M3 judges the branches themselves. Live-measured before M3 existed: a 90-byte line
+# built for (a|aa)+b was still running when a 10 s cap killed it (src/regexguard.h's catastrophicAlternationMessage
+# carries the same measurement). bombCase() already structurally refuses at compile time, before any corpus
+# content matters, so the existing fixture is enough — these never reach the engine at all now.
+bombCase "(a|a)+b (exact-duplicate branches)"   '(a|a)+b'
+bombCase "(a|aa)+b (prefix branches)"           '(a|aa)+b'
+bombCase '(x|xy)+c$ (prefix, trailing anchor)'  '(x|xy)+c$'
+bombCase '(\w|\d)+$ (intersecting classes)'     '(\w|\d)+$'
+bombCase "(a|a*)+ (a branch matches empty)"     '(a|a*)+'
+
 # The refusal must carry a WORKAROUND, not just a complaint — the L5 refusal set that bar and this one
 # keeps it. (Checked once; the sentence is shared by every construct.)
 "$BIN" "$CORPUS" --regex='(a+)+b' --no-cache >/dev/null 2>"$TMP/err"
@@ -196,6 +214,8 @@ safeCase "(a+)(b)+ (siblings)"     '(a+)(b)+'
 safeCase "(?:abc)+ (non-capturing)" '(?:abc)+'
 safeCase "(\s*\w+){1,20} (bounded outer)" '(\s*\w+){1,20}'
 safeCase "(a?)b (bounded, outer unquant.)" '(a?)b'
+safeCase "foo.*bar (spanning, no group)"  'foo.*bar'
+safeCase "TODO|FIXME (top-level alt, unquantified)" 'TODO|FIXME'
 
 # and the point of the fixture survives: a safe pattern still finds normal.cpp's ordinary matches while
 # bomb.md sits in the very same candidate set, scanned harmlessly.
@@ -219,21 +239,30 @@ fi
 "$BIN" "$CORPUS" --regex='a+b' --no-prefilter --no-cache >"$TMP/s2" 2>/dev/null
 if diff -q "$TMP/s1" "$TMP/s2" >/dev/null; then ok "deterministic on the safe scanning path too"; else no "non-deterministic (safe path)"; fi
 
-# ── (5) informational: the MID-MATCH catch survives as belt-and-braces ──────────────────────────────────
-# The structural guard is a static approximation and says so — overlapping alternation like (a|a)+b is a
-# real bomb it cannot see. The catch around the match is therefore NOT removed; it lives in
+# ── (5) informational: the MID-MATCH catch survives as belt-and-braces for M3's disclosed residual gap ──
+# M3 (src/regexguard.h) now refuses (a|a)+b structurally — arm (6) above asserts it, so it no longer
+# exercises the mid-match catch at all. The one scope boundary M3 names but does not judge is a multi-byte
+# literal compared against a class ('ab' vs '\w'): (ab|a\w)+c still passes every screen (neither branch
+# carries a quantifier, so M2 is silent; 'ab' is two bytes so M3's FIRST-BYTE rule does not compare it
+# against '\w' at all) while remaining exactly the same hazard — both branches consume the same bytes at
+# every position in a run built from 'ab' pairs. A dedicated fixture is needed: the committed bomb.md/
+# normal.cpp are pure 'a' runs, which this shape does not bite (neither branch of (ab|a\w) matches a lone
+# 'a' unambiguously the way (a|aa) does). Catch around the match is NOT removed; it lives in
 # src/regexguard.h now, and on libc++ it converts a mid-match error_complexity into a REFUSAL by name at
 # exit 1 (it used to skip the file silently, leaving hits= a floor nothing disclosed). It stays
 # informational HERE because on libstdc++ that error never arrives (the whole reason for the guard);
 # test/regexguardcheck.sh arm (b) asserts the refusal on every platform through a fault switch.
-rc="$( capRun 30 "$TMP/out" "$TMP/err" "$CORPUS" --regex='(a|a)+b' --no-prefilter --no-cache )"
+ALTFIX="$TMP/altfix"; mkdir -p "$ALTFIX"
+python3 -c "print('ab' * 60 + 'xc')" >"$ALTFIX/alt.md" 2>/dev/null \
+    || awk 'BEGIN{s="";for(i=0;i<60;i++)s=s"ab";print s "xc"}' >"$ALTFIX/alt.md"
+rc="$( capRun 30 "$TMP/out" "$TMP/err" "$ALTFIX" --regex='(ab|a\w)+c' --no-prefilter --no-cache )"
 if [ "$rc" = TIMEOUT ]; then
-    printf '  INFO  overlapping-alternation bomb (a|a)+b ran past 30 s — a KNOWN gap in the static guard on a\n'
-    printf '        libstdc++-shaped engine; documented in src/search.h, not asserted here\n'
+    printf '  INFO  overlapping-alternation bomb (ab|a\\w)+c ran past 30 s — the one DISCLOSED gap in M3 (a\n'
+    printf '        multi-byte literal against a class) on a libstdc++-shaped engine; src/regexguard.h names it\n'
 elif grep -qi 'regex' "$TMP/err"; then
     ok "informational: mid-match catch still wired ($( grep -i regex "$TMP/err" | head -1 | head -c 160 ))"
 else
-    printf '  INFO  (a|a)+b completed at exit %s with no degrade alert (expected under NDEBUG, or if the\n' "$rc"
+    printf '  INFO  (ab|a\\w)+c completed at exit %s with no degrade alert (expected under NDEBUG, or if the\n' "$rc"
     printf '        engine simply matched it) — the belt-and-braces catch is not asserted, only kept\n'
 fi
 
