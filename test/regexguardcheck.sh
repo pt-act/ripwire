@@ -23,15 +23,16 @@
 #       (FROM and TO), a --match #match? predicate, a --lint-rules #match? predicate and --regex is REFUSED:
 #       exit 1, bounded time, never a signal death, the pattern and the construct named on stderr. Each entry
 #       point also has a POSITIVE CONTROL: an ordinary pattern on the same fixture still answers.
-#   (b) MATCH-TIME EXHAUSTION IS DISCLOSED, NEVER SILENT — the screen is a static approximation (overlapping
-#       alternation like (a|a)+z is a real bomb it cannot see), so a regex_error thrown DURING a match must
-#       refuse the answer by name rather than abort or report a count the engine never finished measuring.
-#       (b1) is portable: the non-NDEBUG fault switch RIPWIRE_FAULT_REGEX_MATCH=1 makes every guarded match
-#       throw, on every standard library, and each entry point must refuse. The flavour is ASKED of the binary
-#       with a sibling fault switch whose alert is independent of this seam (prcontextcheck's idiom), so a
-#       Release build reports the arm unobservable instead of passing or failing it for a switch it compiled
-#       out. (b2) drives the REAL engine with (a|a)+z where the binary links libc++, whose engine abandons
-#       that match; libstdc++ has no budget and would hang, which is the documented gap, not asserted.
+#   (b) MATCH-TIME EXHAUSTION IS DISCLOSED, NEVER SILENT — the screen is a static approximation, so a regex_error
+#       thrown DURING a match must refuse the answer by name rather than abort or report a count the engine never
+#       finished measuring. (b1) is portable: the non-NDEBUG fault switch RIPWIRE_FAULT_REGEX_MATCH=1 makes every
+#       guarded match throw, on every standard library, and each entry point must refuse. The flavour is ASKED of
+#       the binary with a sibling fault switch whose alert is independent of this seam (prcontextcheck's idiom),
+#       so a Release build reports the arm unobservable instead of passing or failing it for a switch it compiled
+#       out. (b2) drove the REAL engine with overlapping alternation — (a|a)+z — where the binary links libc++,
+#       whose engine abandons that match; libstdc++ has no budget and would hang, which was the documented gap,
+#       not asserted. regex-screen-hardening's M3 (src/regexguard.h) closed that named gap, so (a|a)+z is refused
+#       structurally now, on every platform; see the M3 DISCLOSURE comment above (b2) for what this leaves open.
 #   (c) STATIC — no std::regex construction, match, iterator, result type or <regex> include in src/ outside
 #       src/regexguard.h, over source with comments and string literals blanked (so the words in prose do not
 #       count). The allowlist carries a reason per row, a stale row FAILS, and the detector is proved on a
@@ -265,6 +266,13 @@ else
 fi
 
 # ── (b2) the REAL engine: overlapping alternation passes the structural screen and is abandoned mid-match ──────
+# M3 DISCLOSURE (regex-screen-hardening): src/regexguard.h now refuses (a|a)+z structurally, on every platform
+# — it was precisely the named gap this arm exploited to reach a real libc++ abandonment, so (b2) below and
+# arm (i)'s two LINKS_LIBCXX sub-tests no longer reach the engine at all and will fail closed (refused, not
+# abandoned) once exercised on a libc++ leg. NOT fixed in this pass: a replacement needs a pattern that still
+# evades M3 (its own comment names one surviving shape — a multi-byte literal against a class, e.g. an
+# "ab"-vs-"\w" overlap) paired with fixture content/paths that actually provoke it, verified on a libc++ build;
+# this sandbox has none, so a guessed pairing would be unverified rather than fixed. Left as transcribed below.
 LINKS_LIBCXX=0
 if command -v otool >/dev/null 2>&1 && otool -L "$BIN" 2>/dev/null | grep -q 'libc++'; then LINKS_LIBCXX=1; fi
 if command -v ldd >/dev/null 2>&1 && ldd "$BIN" 2>/dev/null | grep -q 'libc++\.so'; then LINKS_LIBCXX=1; fi
@@ -466,7 +474,11 @@ else
 fi
 
 # ── (i) --arch decides deny first: an allow that cannot be finished matters only when a deny fires ─────────────────
-printf 'allow path zz/.* -> (a|a)+z\ndeny path nomatch/.* -> .*\n' >"$TMP/arch_allow_nodeny.txt"
+# this sub-test's claim is deny-short-circuiting, not regex pathology, so the allow rule's own pattern only needs
+# to exist — (a|b)+z (disjoint branches, admitted by src/regexguard.h's M3) keeps that true after M3 landed, when
+# (a|a)+z stopped compiling at all (see the M3 disclosure above arm (b2) for the two sub-tests that DO need a
+# pattern the engine actually reaches).
+printf 'allow path zz/.* -> (a|b)+z\ndeny path nomatch/.* -> .*\n' >"$TMP/arch_allow_nodeny.txt"
 rc="$( capRun 20 "$TMP/i.out" "$TMP/i.err" "$FIX" --no-cache --arch="$TMP/arch_allow_nodeny.txt" )"
 if [ "$rc" = 0 ] && grep -q '<arch ' "$TMP/i.out"; then
     ok "(i) no deny matches, so the edge is permitted without consulting the unfinishable allow (exit 0)"

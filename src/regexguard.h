@@ -26,7 +26,8 @@
 //       library: a pattern one engine abandons and the other backtracks on forever gets one answer, not two.
 //   GuardedRegex::search / forEachMatch → RegexVerdict { Miss, Hit, Exhausted, Skipped }. Exhausted is a
 //       regex_error thrown DURING the match (libc++'s error_complexity / error_stack): the screen is a static
-//       approximation, and overlapping alternation — (a|a)+z — passes it. It is never Miss. METHODOLOGY §9: an
+//       approximation; M3 below catches the named overlapping-alternation shapes, but not every one (a
+//       multi-byte literal against a class is a disclosed gap), so some can still reach here. It is never Miss. METHODOLOGY §9: an
 //       abandoned match is "unknown", and a caller that folds it into "no hit" reports a zero it did not
 //       measure. Every entry point refuses on it by name, quoting kRegexAbandonedReason. Skipped is a subject
 //       NEVER HANDED to the engine because it exceeds this thread's measured-safe bound (maxEngineSubjectBytes)
@@ -64,6 +65,7 @@
 #include "infra/strkern.h"   // findByte / find3 / findByteset / lowerFoldedEquals — the literal paths' byte kernels
 
 #include <algorithm>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -170,9 +172,11 @@ inline std::optional<std::string> nonPortableRegexEscape( const std::string& pat
 // suggests — '(\s*\w+){1,20}' — legal; an UNQUANTIFIED group passes whatever it contains, so (a+)b, (a?)b
 // and (a+)(b)+ pass; '+' inside a character class or behind a backslash is a literal, so [a+]+ and (\+)+
 // pass; and the '?' that opens '(?:', '(?=' or '(?!' is a group MODIFIER, not a quantifier, so (?:abc)+
-// passes while (?:a+)+b is still refused. The known GAP is overlapping alternation — (a|a)+b is a real
-// bomb whose branches only overlap semantically — which is why GuardedRegex's match-time catch below is kept
-// as belt-and-braces rather than removed. Every one of these cases is an arm of test/regexbombcheck.sh.
+// passes while (?:a+)+b is still refused. Overlapping alternation — two branches that can match the same
+// bytes, like (a|a)+b — is a DIFFERENT shape this scan does not see at all; M3 right below judges it
+// separately, on the group's top-level branches rather than its inner quantifiers. GuardedRegex's match-time
+// catch stays belt-and-braces for whatever neither scan catches. Every one of these cases is an arm of
+// test/regexbombcheck.sh.
 //
 // Scope: EVERY user-authored pattern, through compileGuardedRegex below — --regex, --graph-query file(), the
 // --arch path-rules and the #match?/#not-match? predicates of --match and --lint-rules. This paragraph used to
@@ -254,14 +258,297 @@ inline std::string catastrophicRegexMessage( char outerQuant )
              "make the OUTER bounded with an explicit interval ('(\\s*\\w+){1,20}')";
 }
 
+// M3 (regex-screen-hardening, the overlapping-alternation gap-fill) — M2 above refuses an unbounded outer
+// quantifier over a group that carries an INNER quantifier. (a|a)+b, (a|aa)+b and (\w|\d)+b carry none —
+// every branch is a single atom or a plain literal — so M2 does not see them, and they were the one GAP
+// M2's own comment named rather than hid. The hazard is a different shape of the same disease: when two
+// top-level alternatives of a REPEATED group can both consume the same bytes, every way of attributing a
+// matching run between them is a separate backtracking path, exponential in the run's length — alternation
+// standing in for M2's nesting. Measured live on this tree's own libstdc++ (gcc 13.3, Ubuntu 24.04):
+// `--regex='(a|aa)+b'` against a 90-byte line crafted so the required-literal prefilter cannot skip the
+// engine was still running when a 10 s cap killed it; a standalone std::regex_search with the same shapes
+// reproduces it with no ripwire code in the stack at all.
+//
+// SCOPE. This is a structural approximation of three named shapes, not a second regex engine, and every
+// branch it cannot fully characterize is reported unknown rather than guessed — the tokenizer further
+// down this file bails the same way on a token it cannot vouch for. A branch is known only when it is
+// PLAIN LITERAL BYTES throughout (any length, nothing quantified) or EXACTLY ONE quantifiable atom (a
+// literal, '.', or \d \D \s \S \w \W \0) with at most one trailing quantifier; a nested group, a
+// backreference, a bracket class, or any other mix reports unknown and never itself causes a refusal.
+// Three independent tests then judge the known branches of one group:
+//   NULLABLE    a branch that can match zero bytes on its own (an empty branch, or a starred/optional
+//               single atom) — a zero-width choice at every position is its own ambiguity.
+//   PREFIX      two literal-only branches where one is a byte-for-byte prefix of the other (equal
+//               counts): every run the shorter builds alone, the longer can also be asked to build.
+//   FIRST-BYTE  two single-byte-per-repetition branches (a one-byte literal, or a single atom) whose
+//               possible first bytes intersect — \d and \w both admit '5', 'a' and \w both admit 'a'.
+// (a|b)+, (abc)+, TODO|FIXME and bounded (\s*\w+){1,20} trip none of the three; test/regexbombcheck.sh
+// measures the claim, not this comment. DISCLOSED GAP: a multi-byte literal compared against a class
+// (ab vs \w) is not judged — only single-byte-per-repetition pairs are, which is the shape that actually
+// repartitions a run; GuardedRegex's match-time catch stays belt-and-braces for whatever this still misses.
+
+struct RegexAltBranch
+{
+    bool             isLiteralOnly = false;   // every byte in the branch is a plain literal, none quantified
+    std::string      literalText;             // valid when isLiteralOnly
+    bool             isSingleAtom  = false;   // exactly one atom, at most one trailing quantifier, nothing else
+    bool             canMatchEmpty = false;   // valid when isLiteralOnly (text empty) or isSingleAtom
+    std::bitset<256> firstByteSet;            // valid when isSingleAtom, or isLiteralOnly with 1-byte text
+};
+
+// '*' and '?' (and '{0,…}'/'{0}') admit zero repetitions; '+' and '{n,…}' with n ≥ 1 do not.
+// regexQuantifierAt's own RegexQuantifier does not carry the lower bound, so this re-reads it the same
+// way regexQuantifierAt parses it — call only once regexQuantifierAt has confirmed `isPresent`.
+inline bool regexQuantifierAllowsZero( const std::string& pat, std::size_t at ) noexcept
+{
+    if( at >= pat.size() || pat[ at ] == '+' ) { return false; }
+    if( pat[ at ] == '*' || pat[ at ] == '?' ) { return true; }
+    if( pat[ at ] != '{' )                     { return false; }
+    std::size_t cursor = at + 1, lower = 0;
+    bool        sawDigit = false;
+    for( ; cursor < pat.size() && pat[ cursor ] >= '0' && pat[ cursor ] <= '9'; ++cursor )
+    {
+        lower = lower * 10 + std::size_t( pat[ cursor ] - '0' );
+        sawDigit = true;
+    }
+    return sawDigit && lower == 0;
+}
+
+// \d \D \s \S \w \W \0 by the same classic-locale, ASCII byte sets this header's icase folding assumes.
+inline std::bitset<256> regexAltClassBytes( char escaped ) noexcept
+{
+    std::bitset<256> set;
+    switch( escaped )
+    {
+    case 'd': for( int c = '0'; c <= '9'; ++c ) { set.set( std::size_t( c ) ); } return set;
+    case 'D': set.set(); for( int c = '0'; c <= '9'; ++c ) { set.reset( std::size_t( c ) ); } return set;
+    case 's': for( unsigned char c : { ' ', '\t', '\n', '\v', '\f', '\r' } ) { set.set( c ); } return set;
+    case 'S': set.set(); for( unsigned char c : { ' ', '\t', '\n', '\v', '\f', '\r' } ) { set.reset( c ); } return set;
+    case 'w':
+        for( int c = '0'; c <= '9'; ++c ) { set.set( std::size_t( c ) ); }
+        for( int c = 'a'; c <= 'z'; ++c ) { set.set( std::size_t( c ) ); }
+        for( int c = 'A'; c <= 'Z'; ++c ) { set.set( std::size_t( c ) ); }
+        set.set( '_' );
+        return set;
+    case 'W':
+        set.set();
+        for( int c = '0'; c <= '9'; ++c ) { set.reset( std::size_t( c ) ); }
+        for( int c = 'a'; c <= 'z'; ++c ) { set.reset( std::size_t( c ) ); }
+        for( int c = 'A'; c <= 'Z'; ++c ) { set.reset( std::size_t( c ) ); }
+        set.reset( '_' );
+        return set;
+    case '0': set.set( 0 ); return set;
+    default:  return set;   // empty: not a class this screen computes a byte set for (disclosed gap)
+    }
+}
+
+// One top-level alternative of a repeated group: from `pat[at]` to the next top-level '|' or `end`.
+// Advances `at` past the '|' it stopped at (or to `end`). A nested group or bracket class is stepped over
+// whole, in one jump, and marks the branch unknown for every rule above — see the SCOPE note above M3.
+inline RegexAltBranch regexAltBranchAt( const std::string& pat, std::size_t& at, std::size_t end ) noexcept
+{
+    RegexAltBranch branch;
+    branch.isLiteralOnly = true;
+    std::size_t      atomCount         = 0;
+    bool             lastAtomKnown     = false;
+    bool             lastAtomCanBeEmpty = false;
+    std::bitset<256> lastAtomSet;
+
+    while( at < end && pat[ at ] != '|' )
+    {
+        const char c = pat[ at ];
+
+        if( c == '(' )                                      // opaque to this screen — see the SCOPE note
+        {
+            std::size_t depth = 1;
+            std::size_t j     = at + 1 + regexGroupModifierLength( pat, at );
+            for( ; j < end && depth > 0; ++j )
+            {
+                if( pat[ j ] == '\\' )     { ++j; }
+                else if( pat[ j ] == '(' ) { ++depth; }
+                else if( pat[ j ] == ')' ) { --depth; }
+            }
+            const RegexQuantifier q = regexQuantifierAt( pat, j );
+            branch.isLiteralOnly = false; ++atomCount; lastAtomKnown = false;
+            at = q.isPresent ? j + q.lengthCount : j;
+            continue;
+        }
+        if( c == ']' || c == '}' )                          // unbalanced: the compile probe owns this error
+        {
+            branch.isLiteralOnly = false;
+            ++at;
+            continue;
+        }
+        if( c == '[' )                                       // a bracket class: step over it whole (disclosed gap)
+        {
+            std::size_t j = at + 1;
+            if( j < end && pat[ j ] == '^' ) { ++j; }
+            if( j < end && pat[ j ] == ']' ) { ++j; }         // a leading ']' is a literal member, not the close
+            while( j < end && pat[ j ] != ']' ) { j += ( pat[ j ] == '\\' && j + 1 < end ) ? 2 : 1; }
+            if( j < end ) { ++j; }
+            const RegexQuantifier q = regexQuantifierAt( pat, j );
+            branch.isLiteralOnly = false; ++atomCount; lastAtomKnown = false;
+            at = q.isPresent ? j + q.lengthCount : j;
+            continue;
+        }
+        if( c == '^' || c == '$' ) { ++at; continue; }        // zero-width: contributes no atom
+        if( c == '\\' )
+        {
+            if( at + 1 >= end )
+            {
+                branch.isLiteralOnly = false; ++atomCount; lastAtomKnown = false;
+                at = end;
+                continue;
+            }
+            const char escaped = pat[ at + 1 ];
+            if( escaped == 'b' || escaped == 'B' ) { at += 2; continue; }   // zero-width
+            const std::size_t     tokenEnd = at + 2;
+            const RegexQuantifier q        = regexQuantifierAt( pat, tokenEnd );
+            ++atomCount;
+            if( std::string_view( "dDsSwW0" ).find( escaped ) != std::string_view::npos )
+            {
+                branch.isLiteralOnly = false;
+                lastAtomKnown        = true;
+                lastAtomSet          = regexAltClassBytes( escaped );
+                lastAtomCanBeEmpty   = q.isPresent && regexQuantifierAllowsZero( pat, tokenEnd );
+            }
+            else if( q.isPresent )                            // a quantified identity escape: '\.+' etc.
+            {
+                branch.isLiteralOnly = false;
+                lastAtomKnown        = true;
+                lastAtomSet          = std::bitset<256>{}.set( static_cast<unsigned char>( escaped ) );
+                lastAtomCanBeEmpty   = regexQuantifierAllowsZero( pat, tokenEnd );
+            }
+            else                                              // an identity escape IS a plain literal byte
+            {
+                branch.literalText.push_back( escaped );
+                lastAtomKnown      = true;
+                lastAtomSet        = std::bitset<256>{}.set( static_cast<unsigned char>( escaped ) );
+                lastAtomCanBeEmpty = false;
+            }
+            at = q.isPresent ? tokenEnd + q.lengthCount : tokenEnd;
+            continue;
+        }
+
+        // a plain byte, or '.' (any byte but the two std::regex ECMAScript line terminators)
+        const RegexQuantifier q = regexQuantifierAt( pat, at + 1 );
+        ++atomCount;
+        if( c == '.' )
+        {
+            branch.isLiteralOnly = false;
+            lastAtomKnown        = true;
+            lastAtomSet          = std::bitset<256>{}.set();
+            lastAtomSet.reset( '\n' );
+            lastAtomSet.reset( '\r' );
+            lastAtomCanBeEmpty = q.isPresent && regexQuantifierAllowsZero( pat, at + 1 );
+        }
+        else if( q.isPresent )
+        {
+            branch.isLiteralOnly = false;
+            lastAtomKnown        = true;
+            lastAtomSet          = std::bitset<256>{}.set( static_cast<unsigned char>( c ) );
+            lastAtomCanBeEmpty   = regexQuantifierAllowsZero( pat, at + 1 );
+        }
+        else
+        {
+            branch.literalText.push_back( c );
+            lastAtomKnown      = true;
+            lastAtomSet        = std::bitset<256>{}.set( static_cast<unsigned char>( c ) );
+            lastAtomCanBeEmpty = false;
+        }
+        at = q.isPresent ? at + 1 + q.lengthCount : at + 1;
+    }
+    if( at < end && pat[ at ] == '|' ) { ++at; }
+
+    if( atomCount == 0 )
+    {
+        branch.canMatchEmpty = true;                         // the empty branch, e.g. the right side of (a|)+
+    }
+    else if( atomCount == 1 && lastAtomKnown )
+    {
+        branch.isSingleAtom  = true;
+        branch.canMatchEmpty = lastAtomCanBeEmpty;
+        branch.firstByteSet  = lastAtomSet;
+    }
+    if( branch.isLiteralOnly && branch.literalText.size() == 1 )
+    {
+        branch.firstByteSet = std::bitset<256>{}.set( static_cast<unsigned char>( branch.literalText[ 0 ] ) );
+    }
+    return branch;
+}
+
+// Judges one group's top-level alternatives against each other. `false` ⇒ no pair trips NULLABLE, PREFIX,
+// or FIRST-BYTE above (including when there is no top-level '|' in [contentStart, contentEnd) at all).
+inline bool regexAltBranchesOverlap( const std::string& pat, std::size_t contentStart, std::size_t contentEnd )
+{
+    std::vector<RegexAltBranch> branches;
+    for( std::size_t at = contentStart; at < contentEnd; )
+    {
+        branches.push_back( regexAltBranchAt( pat, at, contentEnd ) );
+    }
+    if( branches.size() < 2 )
+    {
+        return false;
+    }
+    for( const RegexAltBranch& b : branches )
+    {
+        if( ( b.isLiteralOnly && b.literalText.empty() ) || ( b.isSingleAtom && b.canMatchEmpty ) )
+        {
+            return true; // NULLABLE
+        }
+    }
+    for( std::size_t i = 0; i < branches.size(); ++i )
+    {
+        for( std::size_t j = i + 1; j < branches.size(); ++j )
+        {
+            const RegexAltBranch& a = branches[ i ];
+            const RegexAltBranch& b = branches[ j ];
+            if( a.isLiteralOnly && b.isLiteralOnly && !a.literalText.empty() && !b.literalText.empty() )
+            {
+                const bool          aIsShorter = a.literalText.size() <= b.literalText.size();
+                const std::string&  shorter    = aIsShorter ? a.literalText : b.literalText;
+                const std::string&  longer     = aIsShorter ? b.literalText : a.literalText;
+                if( longer.compare( 0, shorter.size(), shorter ) == 0 )
+                {
+                    return true; // PREFIX
+                }
+            }
+            const bool aIsSingleByte = a.isSingleAtom || ( a.isLiteralOnly && a.literalText.size() == 1 );
+            const bool bIsSingleByte = b.isSingleAtom || ( b.isLiteralOnly && b.literalText.size() == 1 );
+            if( aIsSingleByte && bIsSingleByte && ( a.firstByteSet & b.firstByteSet ).any() )
+            {
+                return true; // FIRST-BYTE
+            }
+        }
+    }
+    return false;
+}
+
+inline std::string catastrophicAlternationMessage( char outerQuant )
+{
+    return   std::string( "catastrophic backtracking: the unbounded quantifier '" ) + outerQuant + "' repeats a group whose top-level "
+             "alternatives overlap — one is a byte-for-byte prefix of another (or equal), one can match zero bytes on its own, or two can "
+             "start on the same byte ('\\w' and '\\d' both admit a digit; 'a' and '\\w' both admit 'a'). Every way of attributing a "
+             "matching run of input between the overlapping branches is a separate backtracking path, exponential in the run's length — "
+             "the same hazard as the nested-quantifier family above, reached through alternation instead of nesting. std::regex has no "
+             "backtracking budget you can set, and libstdc++ does not give up on its own (measured on this tree's own Ubuntu 24.04 / "
+             "gcc 13.3 / libstdc++: a 90-byte line built for '(a|aa)+b' was still running when a 10 s cap killed it) — so this is refused "
+             "rather than answered differently per platform. Workaround: make the branches mutually exclusive (no shared prefix, no "
+             "nullable branch, disjoint first bytes), or make the OUTER quantifier bounded with an explicit interval";
+}
+
 inline std::optional<std::string> catastrophicRegexConstruct( const std::string& pat )
 {
-    // one flag per OPEN group: does anything inside it, at any depth, carry a quantifier — of ANY kind?
-    // (M2-b: this used to track only UNBOUNDED inner repetition, which let the libstdc++-hanging (a?)+ and
-    // (a{1,3})+ through. Unbounded is a subset of "any", so widening the flag is the whole behaviour change
-    // — the refusal condition below still requires the OUTER quantifier to be unbounded.)
-    std::vector<char> hasQuantifierInsideGroup;
-    bool              isInsideClass = false;
+    // one frame per OPEN group: does anything inside it, at any depth, carry a quantifier — of ANY kind? —
+    // plus the byte offset just past its own opening, so a closing ')' can hand M3 the group's own
+    // top-level content without a second pass over the pattern.
+    // (M2-b: the quantifier flag used to track only UNBOUNDED inner repetition, which let the
+    // libstdc++-hanging (a?)+ and (a{1,3})+ through. Unbounded is a subset of "any", so widening the flag
+    // was the whole behaviour change — the refusal condition below still requires the OUTER quantifier to
+    // be unbounded.)
+    struct RegexGroupFrame { char hasQuantifierInside; std::size_t contentStart; };
+    std::vector<RegexGroupFrame> groupFrames;
+    bool                         isInsideClass = false;
 
     for( std::size_t i = 0; i < pat.size(); ++i )
     {
@@ -280,28 +567,42 @@ inline std::optional<std::string> catastrophicRegexConstruct( const std::string&
         if( c == '[' )      { isInsideClass = true; continue; }
 
         // group open / close — the close is where the whole verdict is made
-        if( c == '(' ) { hasQuantifierInsideGroup.push_back( 0 ); i += regexGroupModifierLength( pat, i ); continue; }
+        if( c == '(' )
+        {
+            const std::size_t modLen = regexGroupModifierLength( pat, i );
+            groupFrames.push_back( { 0, i + 1 + modLen } );
+            i += modLen;
+            continue;
+        }
         if( c == ')' )
         {
-            if( hasQuantifierInsideGroup.empty() )
+            if( groupFrames.empty() )
             {
                 continue; // unbalanced: the compile probe below owns that error
             }
 
-            const bool isRepeatingInside = hasQuantifierInsideGroup.back() != 0;
-            hasQuantifierInsideGroup.pop_back();
+            const RegexGroupFrame frame             = groupFrames.back();
+            const bool             isRepeatingInside = frame.hasQuantifierInside != 0;
+            groupFrames.pop_back();
             const RegexQuantifier quant = regexQuantifierAt( pat, i + 1 );
 
-            if( quant.isPresent && quant.isUnbounded && isRepeatingInside )
+            if( quant.isPresent && quant.isUnbounded )
             {
-                return catastrophicRegexMessage( pat[ i + 1 ] );
+                if( isRepeatingInside )
+                {
+                    return catastrophicRegexMessage( pat[ i + 1 ] );
+                }
+                if( regexAltBranchesOverlap( pat, frame.contentStart, i ) )
+                {
+                    return catastrophicAlternationMessage( pat[ i + 1 ] );
+                }
             }
 
             // the group is now an ATOM of its parent: a quantifier anywhere inside it — or ON it — is a
             // quantifier inside the parent too, which is what makes ((a+))+, ((a)+)+ and ((a)?)+ visible
-            if( !hasQuantifierInsideGroup.empty() && ( isRepeatingInside || quant.isPresent ) )
+            if( !groupFrames.empty() && ( isRepeatingInside || quant.isPresent ) )
             {
-                hasQuantifierInsideGroup.back() = 1;
+                groupFrames.back().hasQuantifierInside = 1;
             }
             if( quant.isPresent )
             {
@@ -312,9 +613,9 @@ inline std::optional<std::string> catastrophicRegexConstruct( const std::string&
 
         // a plain quantifier: it marks the innermost enclosing group, if any (top-level repetition is fine)
         const RegexQuantifier quant = regexQuantifierAt( pat, i );
-        if( quant.isPresent && !hasQuantifierInsideGroup.empty() )
+        if( quant.isPresent && !groupFrames.empty() )
         {
-            hasQuantifierInsideGroup.back() = 1;
+            groupFrames.back().hasQuantifierInside = 1;
         }
         if( quant.isPresent )
         {

@@ -15,6 +15,22 @@ not published here — see `docs/EVALS.md` for the instruments behind the headli
 
 ## [Unreleased]
 
+### Fixed — `--regex`/`--graph-query file()`/`--arch`/`--match`/`--lint-rules`: an overlapping-alternation regex now refuses instead of reaching the engine
+
+`catastrophicRegexConstruct`'s M2 screen refuses an unbounded quantifier over a group that repeats *inside*
+it, but a group whose top-level branches merely *overlap* — `(a|a)+b`, `(a|aa)+b`, `(\w|\d)+$`, a branch
+that can match empty like `(a|a*)+` — carried no inner quantifier at all, so M2 passed every one of them
+through. Measured live on this tree's own libstdc++ (gcc 13.3, Ubuntu 24.04): a 90-byte line built for
+`(a|aa)+b`, crafted so the required-literal prefilter cannot skip the engine, was still running when a 10 s
+cap killed it; the same hazard reaches every user-authored-pattern entry point `src/regexguard.h` guards.
+A new M3 check judges a repeated group's top-level alternatives directly — one a byte-for-byte prefix of
+another (or equal), one able to match zero bytes on its own, or two whose possible first bytes intersect
+(`\w` and `\d` both admit a digit) — and refuses by name with a workaround, before either standard
+library's engine ever sees the pattern. `(a|b)+`, `(abc)+`, `TODO|FIXME` and bounded `(\s*\w+){1,20}` are
+unaffected. Disclosed gap: a multi-byte literal compared against a class (`ab` vs `\w`) is not judged;
+`GuardedRegex`'s mid-match catch stays belt-and-braces for that shape, exercised informationally by
+`test/regexbombcheck.sh`.
+
 ## [0.6.7] — 2026-10-11
 
 ### Fixed — `--impact`: a selector matching several definitions keeps the `via="name"` hedge in its per-file rollup
