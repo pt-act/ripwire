@@ -142,7 +142,8 @@ if [ -f "$DOCS" ]; then
     grep -q 'RIPWIRE_MCP_TOKEN' "$DOCS" \
         && ok "(d) docs name RIPWIRE_MCP_TOKEN" \
         || no "(d) docs do not name RIPWIRE_MCP_TOKEN"
-    grep -qiE 'process list|ps ' "$DOCS" \
+    # "process list" is the phrase the warning itself uses; a bare `ps ` matches "drops it" and friends.
+    grep -qi 'process list' "$DOCS" \
         && ok "(d) docs state the argv exposure the warning is about" \
         || no "(d) docs do not state the process-list exposure"
 else
