@@ -39,6 +39,15 @@ prof*/
 # test/pargates.py's tree tripwire watches for the next writer.
 .gateprobe.*
 
+# workspace-local agent scaffolding — never repo content, never a commit's business.
+# SR-2026-09-28-explicit-path-add: a prior `git add -A ':!.agents'` swept .hoplite/attachments and
+# .context/ into a public commit anyway, because only .agents was excluded. Ignore all three by name
+# so a plain `-A`/`-u`/`.` add can no longer pick them up; this is the backstop, `git add <paths>` is
+# still the actual defense (see standing_requirements.md).
+/.agents/
+/.context/
+/.hoplite/
+
 # macOS
 .DS_Store
 
