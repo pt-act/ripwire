@@ -14,6 +14,8 @@
 //   • bind 127.0.0.1 by default; a non-loopback bind requires BOTH an explicit host AND a shared bearer
 //     token — missing either ⇒ REFUSE TO START (exit 1 + loud stderr banner).
 //   • a token, if configured, gates EVERY request (constant-time Bearer compare) → 401 on missing/wrong.
+//     Prefer RIPWIRE_MCP_TOKEN over --mcp-token: the argv form is visible in the process list to other
+//     local users, which is why main.cpp warns once at startup when the token came from argv.
 //   • edit verbs are refused over the remote transport by default; --allow-remote-edits opts in and FORCES
 //     the token requirement even on loopback (McpDispatchPolicy carries this into the shared handler).
 //   • one listener serves ONE workspace fixed at startup; an off-workspace path is refused (mcp.h pin gate).

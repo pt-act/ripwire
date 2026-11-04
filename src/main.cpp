@@ -4552,6 +4552,16 @@ static int dispatchMainBody( const rw::Config& cfg, char** argv )
             McpHttpConfig hc;
             hc.listenSpec = std::string( cfg.listen );
             hc.token      = std::string( cfg.mcpToken );
+            // audit #7: the argv form puts the shared bearer in the process list for the life of the
+            // server, where any local user can read it. Warn ONCE, here — upstream of runMcpHttp, so this
+            // line prints BEFORE the bind banner inside it. The env fallback below is the recommended
+            // channel and stays silent; the token value is never printed.
+            if( !cfg.mcpToken.empty() )
+            {
+                rw::emitRaw( stderr,
+                    "ripwire: --mcp-token puts the bearer in the process list, where any local user can read it; "
+                    "prefer RIPWIRE_MCP_TOKEN (or a reverse proxy's auth).\n" );
+            }
             if( hc.token.empty() )
             {
                 if( const char* envTok = std::getenv( "RIPWIRE_MCP_TOKEN" ); envTok && *envTok )
