@@ -5072,9 +5072,9 @@ Binds 127.0.0.1 by default (bare PORT = loopback); one listener serves ONE works
 
 ### `--mcp-token=T`
 
-**Answers:** require this bearer token on every HTTP request;
+**Answers:** shared bearer token gating every HTTP request;
 
-mandatory for a non-loopback bind shared bearer token gating every HTTP request (or set RIPWIRE_MCP_TOKEN); a missing/wrong token gets a 401. Required for a non-loopback bind.
+a missing/wrong token gets a 401. Required for a non-loopback bind. Prefer RIPWIRE_MCP_TOKEN: the argv form is visible in the process list to other local users, and ripwire warns at startup.
 
 **Shaped by:** `--listen`
 

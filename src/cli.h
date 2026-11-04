@@ -2906,7 +2906,7 @@ inline constexpr char kHelpTail[] =
         "                               Binds 127.0.0.1 by default (bare PORT = loopback); one listener serves ONE\n"
         "                               workspace fixed at startup. A non-loopback host (e.g. 0.0.0.0:8080) REQUIRES\n"
         "                               --mcp-token and refuses to start without it. No TLS — reverse-proxy it.\n"
-        "    --mcp-token=T              shared bearer token gating every HTTP request; a missing/wrong token gets a 401\n"
+        "    --mcp-token=T              shared bearer token gating every HTTP request; a missing/wrong token gets a 401.\n"
         "                               Required for a non-loopback bind. Prefer RIPWIRE_MCP_TOKEN: the argv form is\n"
         "                               visible in the process list to other local users, and ripwire warns at startup.\n"
         "    --allow-remote-edits       permit the edit verbs over --listen; refused by default\n"
