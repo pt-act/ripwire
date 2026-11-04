@@ -704,6 +704,7 @@ for _g in \
     mcpstalecheck \
     mcpstdiolinecapcheck \
     mcpstrictschemacheck \
+    mcptokencheck \
     mcptoolprunecheck \
     mcptoolsubsetcheck \
     mcptranchecheck \
