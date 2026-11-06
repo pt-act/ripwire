@@ -610,15 +610,23 @@ else
 fi
 skip "B pargates: NOT run from inside a gate — test/pargates.py runs this file, so asserting it here would recurse without bound; the suite run IS the oracle for that property"
 if [ -n "${RIPWIRE_ASAN_BIN:-}" ] && [ -x "${RIPWIRE_ASAN_BIN}" ]; then
+    # BOTH channels, because neither alone is enough: LSan exits non-zero on a leak, but an ASan report can be
+    # EMITTED and the program still exit 0 (and a suppressions file can hide a class of report). So the exit
+    # status is checked AND the stderr is scanned for a sanitizer banner. A clean run must satisfy both.
     if LSAN_OPTIONS=suppressions="$ROOT/lsan_suppressions.txt" "$RIPWIRE_ASAN_BIN" "$FIXTURE" >/dev/null 2>"$TMP/asan.err"; then
-        ok "B ASan/LSan clean over the adversarial fixture ($RIPWIRE_ASAN_BIN)"
-        b_asan="clean"
+        if grep -qE 'ERROR: (Address|Leak)Sanitizer|SUMMARY: (Address|Leak)Sanitizer|runtime error:' "$TMP/asan.err"; then
+            no "B ASan/LSan exited 0 but EMITTED a report on the adversarial fixture: $( grep -m2 -E 'ERROR: (Address|Leak)Sanitizer|runtime error:' "$TMP/asan.err" | tr '\n' ' ' )"
+            b_asan="REPORTED (exit 0)"
+        else
+            ok "B ASan/LSan clean over the adversarial fixture — no report on stderr and exit 0 ($RIPWIRE_ASAN_BIN)"
+            b_asan="clean"
+        fi
     else
         no "B ASan/LSan reported on the adversarial fixture: $( head -3 "$TMP/asan.err" )"
         b_asan="REPORTED"
     fi
 else
-    skip "B ASan/LSan: no RIPWIRE_ASAN_BIN given — a 1.4 GiB rebuild is a Phase-3 line item, not a per-PR gate; set RIPWIRE_ASAN_BIN to assert it"
+    skip "B ASan/LSan: no RIPWIRE_ASAN_BIN given (nothing executable at '${RIPWIRE_ASAN_BIN:-<unset>}') — the 1.4 GiB rebuild is a Phase-3 line item, not a per-PR gate; set RIPWIRE_ASAN_BIN to assert it"
     b_asan="not run (no RIPWIRE_ASAN_BIN)"
 fi
 
