@@ -319,6 +319,7 @@ for _g in \
     atomscheck \
     attribmultidefcheck \
     attrvocabcheck \
+    auditregresscheck \
     barrelshortkeycheck \
     baselinecheck \
     baselinedirtycheck \
