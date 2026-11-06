@@ -140,7 +140,7 @@ for pat in '^(a|aa)+b$' '(x|xy)+c$' '(\w|\d)+$'; do
     fi
 done
 a1v="unproven"; [ "$a1_all" = 1 ] && a1v="repelled"
-row "A1" "cli" "$A1_LEADIN" "$a1_saw; rc per pattern = $a1_rcs" "${a1_worst}s" "$a1v"
+row "A1" "cli" "$A1_LEADIN" "$a1_saw rc per pattern = $a1_rcs" "${a1_worst}s" "$a1v"
 
 # ═══ A4 — hostile git filenames attribute correctly ══════════════════════════════════════════════════════
 # The names are git-porcelain-framing's own fixture shapes (test/gitframingcheck.sh:153-158) and the assertions
