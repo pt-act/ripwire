@@ -87,7 +87,10 @@ echo "auditregresscheck: BIN=$BIN  ROOT=$ROOT  fixture=$FIXTURE"
 GATEHTTP="$( gatehttp_install "$TMP" )" || { echo "could not write the shared HTTP client into $TMP"; exit 2; }
 
 fails=0
-ok(){ printf '  PASS  %s\n' "$1"; }
+# ok() must survive a failed write of its own PASS line: it records the failure where THIS gate reads it
+# (`fails`, tested at the bottom) and still returns 0, so a `… && ok … || no …` chain cannot report the ARM
+# as failed when only the terminal was broken. Canonical suite shape; pinned by test/gateexitcheck.sh (G1).
+ok(){ printf '  PASS  %s\n' "$1" || { fails=$(( fails + 1 )); printf '  FAIL  could not write the PASS line for: %s\n' "$1"; }; return 0; }
 no(){ printf '  FAIL  %s\n' "$1"; fails=$(( fails + 1 )); }
 skip(){ printf '  SKIP  %s\n' "$1"; }
 
