@@ -61,6 +61,12 @@
 
 set -u
 ROOT="$( cd "$( dirname "$0" )/.." && pwd )"
+# Arm A4 builds a throwaway git repo, and two more repos are built from Python below. `git -C DIR` changes the
+# working DIRECTORY but not the ENVIRONMENT, and GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE outrank it — so on a host
+# where one is exported (a git hook running the suite, `git rebase --exec`, a CI job) every question this gate
+# asks its own repo is answered by somebody else's. Source the repo-wide clearing FIRST; see
+# test/lib/clean-env.sh and the sweep that enforces it, test/gitenvhermeticcheck.sh arm (D).
+. "$ROOT/test/lib/clean-env.sh"
 BIN="${1:-${RIPWIRE_BIN:-$ROOT/build/ripwire}}"
 [ "${BIN#/}" = "$BIN" ] && BIN="$ROOT/$BIN"          # allow a repo-relative BIN
 TMP="$( mktemp -d )"; trap 'rm -rf "$TMP"' EXIT

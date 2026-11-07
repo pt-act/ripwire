@@ -29,3 +29,17 @@ and correctly not an attack row. And it does not assert "pargates green" from in
 legs a gate cannot own (pargates, ASan) are SKIPped with the reason named rather than pretended.
 
 The gate is test-only: no `src/` file changes, and the five fixes it pins are unchanged by it.
+
+**Two repo-wide sweep gates in the base suite flagged this lane's new files, and both were this lane's defect
+— not their false positives.** `nulbytecheck` arm (a) asserts every tracked non-binary file is NUL-free, and
+`test/fixtures/audit-reef/minimal.docx` is a real OOXML zip, so it carries NULs by construction; the fixture is
+required by the spec (`spec.md:59`, "a `.docx`"), so the file stays and the `.docx` extension joins
+`BINARY_EXTENSIONS` with its reason — the same treatment `present/ripwire-showcase.pptx` already gets, and the
+row is honest because arm (c) re-checks that an allowlisted extension is backed by a real tracked file.
+`gitenvhermeticcheck` arm (D) sweeps every gate that runs `git init` (187 of them) for a
+`test/lib/clean-env.sh` source, because `git -C DIR` does not override `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`
+— and this gate builds three throwaway repos. It now sources the shared clearing before setting anything, which
+was measured rather than assumed: under a hostile `GIT_DIR`, the shipped gate passes every arm while a copy with
+that one line stripped drops to **six** A4 failures (`git init` lands in the foreign repo, so the fixture index
+comes up empty and ownership comes back 0 rows). Both were red at lane head, green at base `50bc05e84`, and the
+red did not come from this gate's own assertions — it came from two meta-gates doing their job.
